@@ -1,0 +1,1528 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>FBA 发货文件管理</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Public+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/style.css">
+<script src="https://cdn.jsdelivr.net/npm/vue@3.4.21/dist/vue.global.prod.js"></script>
+</head>
+<body>
+<div id="app" v-cloak>
+  <aside class="sidebar">
+    <div class="sidebar-logo">
+      <span class="logo-mark">📦</span>
+      <span class="logo-text">FBA 发货文件</span>
+    </div>
+    <nav class="menu">
+      <div class="menu-group">业务</div>
+      <a v-for="m in menus.filter(m => ['batches','purchase','products','docs'].includes(m.key))" :key="m.key"
+         :href="'#'+m.key" class="menu-item" :class="{active: page===m.key}">
+        <span class="ico">{{m.icon}}</span><span class="menu-label">{{m.label}}</span>
+      </a>
+      <div class="menu-group">配置</div>
+      <a v-for="m in menus.filter(m => ['factories','companies','forwarders','rules'].includes(m.key))" :key="m.key"
+         :href="'#'+m.key" class="menu-item" :class="{active: page===m.key}">
+        <span class="ico">{{m.icon}}</span><span class="menu-label">{{m.label}}</span>
+      </a>
+    </nav>
+    <div class="side-foot">赛狐同步 · 一键生成 · 归档</div>
+  </aside>
+  <div class="layout-main">
+    <header class="topbar">
+      <div class="topbar-title">{{pageTitle}}</div>
+      <div class="topbar-right">FBA 发货文件管理系统</div>
+    </header>
+    <main class="content">
+      <component :is="view" :arg="arg" :key="page+':'+arg"></component>
+    </main>
+  </div>
+  <div class="toasts">
+    <div v-for="t in toasts" :key="t.id" class="toast" :class="t.type">
+      <span class="toast-ico">{{t.type==='err' ? '✕' : '✓'}}</span>
+      <div class="toast-body">
+        <div class="toast-title">{{t.type==='err' ? '操作失败' : '操作成功'}}</div>
+        <div class="toast-msg">{{t.msg}}</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ===================== ① 批次列表 ===================== -->
+<template id="tpl-batches">
+<div>
+  <div class="page-head">
+    <h2>批次管理</h2>
+    <div class="head-ops">
+      <a class="link sync-alt-link" tabindex="0" @click="openExcel()" @keydown.enter="openExcel()">或导入发货单 Excel</a>
+      <button class="btn primary" @click="openSync">＋ 同步新批次</button>
+    </div>
+  </div>
+  <div class="card">
+    <div v-if="loading" class="empty">加载中…</div>
+    <table v-else-if="batches.length" class="table">
+      <thead><tr>
+        <th>批次名</th><th>品牌</th><th>站点</th><th>货件数</th><th>总箱数</th>
+        <th>状态</th><th>同步时间</th><th class="op"></th>
+      </tr></thead>
+      <tbody>
+        <tr v-for="b in batches" :key="b.id">
+          <td><a class="link" :href="'#batches/'+b.id">{{b.name || b.inbound_plan_id}}</a></td>
+          <td>{{b.brand_name || '-'}}</td>
+          <td>{{b.marketplace || b.country || '-'}}</td>
+          <td>{{num(b.shipment_count ?? b.shipments_count)}}</td>
+          <td>{{num(b.carton_total ?? b.total_cartons ?? b.carton_num)}}</td>
+          <td><span class="badge" :class="badgeCls(b.status)">{{b.status}}</span></td>
+          <td class="muted">{{fmtTime(b.synced_at)}}</td>
+          <td class="op">
+            <a class="icon-action" title="查看详情" :href="'#batches/'+b.id">🔍</a>
+            <button class="icon-action" title="删除批次" @click="del(b)">🗑️</button>
+          </td>
+        </tr>
+      </tbody>
+    </table>
+    <div v-else class="empty-state">
+      <div class="empty-ico">📭</div>
+      <div class="empty-title">还没有批次</div>
+      <div class="empty-sub">从赛狐选择一个采购计划，三步确认配对发货数据后导入为新批次，即可一键生成发货文件。</div>
+      <button class="btn primary" @click="openSync">＋ 同步新批次</button>
+    </div>
+  </div>
+
+  <!-- 采购计划多步确认向导 -->
+  <modal v-if="syncOpen" title="同步新批次 — 采购计划确认" size="xl" @close="closeSync">
+    <div class="steps">
+      <div v-for="(s,i) in ['选采购计划','配对发货数据','预览确认']" :key="i" tabindex="0"
+           class="step" :class="{active: syncStep===i+1, done: syncStep>i+1}"
+           @click="gotoStep(i+1)" @keydown.enter="gotoStep(i+1)">
+        <span class="step-num">{{syncStep>i+1 ? '✓' : i+1}}</span>
+        <span class="step-label">{{s}}</span>
+      </div>
+    </div>
+
+    <!-- 步骤1 选采购计划 -->
+    <div v-show="syncStep===1" class="wiz-pane">
+      <div class="modal-sub">选择一个赛狐采购计划。系统将据此自动匹配对应的入库计划与发货数据。</div>
+      <div class="tabs status-tabs">
+        <a v-for="s in ['全部','待审核','待采购','已采购','已驳回']" :key="s" tabindex="0"
+           :class="{active: planStatus===s}" @click="setPlanStatus(s)" @keydown.enter="setPlanStatus(s)">
+          {{s}} <span class="badge grey" v-if="statusCounts[s]!=null">{{statusCounts[s]}}</span>
+        </a>
+      </div>
+      <div v-if="plansLoading" class="empty">正在请求采购计划列表…</div>
+      <template v-else-if="plans.length">
+        <div class="plan-list">
+          <div v-for="p in plans" :key="p.plan_group_no" class="plan-card pick"
+               :class="{picked: pickedPlan && pickedPlan.plan_group_no===p.plan_group_no}"
+               tabindex="0" @click="pickPlan(p)" @keydown.enter="pickPlan(p)">
+            <div class="plan-pick-body">
+              <div class="plan-name" :title="p.plan_group_no">
+                <span class="pick-radio" :class="{on: pickedPlan && pickedPlan.plan_group_no===p.plan_group_no}"></span>
+                📋 {{p.plan_group_no}}
+                <span class="badge" :class="planStatusCls(p.status_label)">{{p.status_label || '—'}}</span>
+                <span class="badge b-blue">计划 {{num(p.plan_total_num)}}</span>
+                <span v-if="p.has_shipping===false" class="chip chip-warn" title="还没建仓发货，无 FBA 货件/箱数/地址">未建仓</span>
+                <span v-if="p.warehouse_name" class="chip">🏬 {{p.warehouse_name}}</span>
+                <span v-if="p.imported" class="badge b-green">已导入</span>
+              </div>
+              <div class="plan-meta">
+                <span>👤 {{p.create_name || '-'}}</span>
+                <span>🕐 {{p.create_time || '-'}}</span>
+                <span>📦 {{num(p.item_count)}} 个SKU</span>
+                <a v-if="p.imported && p.batch_id" class="link" :href="'#batches/'+p.batch_id" @click.stop>打开已有批次 →</a>
+                <span v-else-if="p.imported" class="warn-text">将更新已有批次</span>
+              </div>
+              <div class="pick-items">
+                <div v-for="(it,ix) in (p.items||[])" :key="ix" class="pick-item">
+                  <img class="thumb" v-if="it.main_image" :src="it.main_image" alt="" loading="lazy" referrerpolicy="no-referrer" @error="it.main_image=''">
+                  <span v-else class="thumb thumb-ph">📦</span>
+                  <span class="pi-name ellipsis" :title="it.commodity_name">{{it.commodity_name || it.msku || it.sku}}</span>
+                  <span v-if="it.shop_name || it.site_name" class="chip chip-stat">{{[it.shop_name, it.site_name].filter(Boolean).join(' / ')}}</span>
+                  <span class="pi-num">计划 {{num(it.plan_num)}}</span>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="wiz-pager">
+          <button class="btn sm" :disabled="planPage<=1 || plansLoading" @click="loadPlans(planPage-1)">← 上一页</button>
+          <span class="page-ind">第 {{planPage}} 页 · 共 {{num(planTotal)}} 个</span>
+          <button class="btn sm" :disabled="plansLoading || planPage*planPageSize>=planTotal" @click="loadPlans(planPage+1)">下一页 →</button>
+        </div>
+      </template>
+      <div v-else class="empty">本页没有可同步的采购计划</div>
+    </div>
+
+    <!-- 步骤2 配对发货数据 -->
+    <div v-show="syncStep===2" class="wiz-pane">
+      <div class="modal-sub">为采购计划 <b>{{pickedPlan && pickedPlan.plan_group_no}}</b> 选择对应的入库/发货计划。</div>
+      <div v-if="candLoading" class="empty">正在匹配入库计划…</div>
+      <template v-else-if="candidates.length">
+        <div v-if="autoMatched" class="banner ok auto-match-tip">
+          <div class="banner-title">✓ 已自动匹配最相符的入库计划，可直接进入下一步或手动调整</div>
+        </div>
+        <div class="plan-list">
+          <div v-for="c in candidates" :key="c.inbound_plan_id" class="plan-card pick"
+               :class="{picked: pickedCand && pickedCand.inbound_plan_id===c.inbound_plan_id}"
+               tabindex="0" @click="pickCand(c)" @keydown.enter="pickCand(c)">
+            <div class="plan-pick-body">
+              <div class="plan-name" :title="c.inbound_plan_id">
+                <span class="pick-radio" :class="{on: pickedCand && pickedCand.inbound_plan_id===c.inbound_plan_id}"></span>
+                {{c.name || c.inbound_plan_id}}
+                <span v-if="c.match_score!=null" class="badge" :class="scoreCls(c.match_score)">匹配度 {{c.match_score}}</span>
+                <span v-if="c.imported" class="badge b-green">已导入</span>
+              </div>
+              <div class="plan-meta">
+                <span v-if="c.shop_name || c.marketplace" class="chip chip-stat">{{[c.shop_name, c.marketplace].filter(Boolean).join(' / ')}}</span>
+                <span>🕐 {{c.create_time || '-'}}</span>
+                <span>🚚 {{num(c.shipment_count)}} 货件</span>
+                <span>📦 总量 {{num(c.total_qty)}}</span>
+              </div>
+              <div class="plan-meta">
+                <span v-for="(fc,fi) in (c.fc_list||[])" :key="fi" class="chip mono">{{fc}}</span>
+              </div>
+              <div v-if="c.match_reason" class="cand-reason">💡 {{c.match_reason}}</div>
+              <a v-if="c.imported && c.batch_id" class="link" :href="'#batches/'+c.batch_id" @click.stop>打开已有批次 →</a>
+            </div>
+          </div>
+        </div>
+      </template>
+      <div v-else class="empty-state sm">
+        <div class="empty-ico">🔍</div>
+        <div class="empty-title">未找到匹配的入库计划</div>
+        <div class="empty-sub">请确认该采购计划已在赛狐建仓发货。</div>
+        <button class="btn sm" @click="gotoStep(1)">← 返回选采购计划</button>
+      </div>
+    </div>
+
+    <!-- 步骤3 预览确认 -->
+    <div v-show="syncStep===3" class="wiz-pane">
+      <div v-if="previewLoading" class="empty">正在生成预览…</div>
+      <template v-else-if="preview">
+        <div class="banner" :class="preview.consistency && preview.consistency.matched ? 'ok' : 'err'">
+          <div class="banner-title" v-if="preview.consistency && preview.consistency.matched">
+            ✓ 补货总量 {{num(preview.consistency.purchase_total)}} = 发货总量 {{num(preview.consistency.shipment_total)}}
+          </div>
+          <template v-else>
+            <div class="banner-title">⚠ 补货总量与发货总量不一致</div>
+            <div class="banner-line" v-if="preview.consistency">
+              <span class="dot"></span>
+              <span class="banner-msg">补货 {{num(preview.consistency.purchase_total)}} · 发货 {{num(preview.consistency.shipment_total)}}</span>
+            </div>
+            <div class="banner-line warn" v-for="(d,di) in ((preview.consistency && preview.consistency.sku_diff) || [])" :key="di">
+              <span class="dot"></span>
+              <span class="banner-msg">{{typeof d==='string' ? d : (d.msku ? d.msku + '：补货 '+num(d.purchase)+' / 发货 '+num(d.shipment) : JSON.stringify(d))}}</span>
+            </div>
+          </template>
+        </div>
+
+        <h4 class="wiz-sec">补货清单<span class="muted"> · 共 {{num(preview.restock && preview.restock.total_num)}}</span></h4>
+        <div class="table-wrap">
+          <table class="table sub">
+            <thead><tr>
+              <th>图</th><th>SKU</th><th>品名</th><th>店铺/站点</th>
+              <th class="num">计划量</th><th class="num">每箱数</th><th class="num">采购成本</th><th>供应商</th>
+            </tr></thead>
+            <tbody>
+              <tr v-for="(it,ix) in ((preview.restock && preview.restock.items) || [])" :key="ix">
+                <td><img class="thumb sm" v-if="it.main_image" :src="it.main_image" alt="" loading="lazy" referrerpolicy="no-referrer" @error="it.main_image=''"><span v-else class="thumb sm thumb-ph">📦</span></td>
+                <td class="mono">{{it.msku || it.sku || '-'}}</td>
+                <td class="ellipsis" :title="it.commodity_name">{{it.commodity_name || '-'}}</td>
+                <td>{{[it.shop_name, it.site_name].filter(Boolean).join(' / ') || '-'}}</td>
+                <td class="num">{{num(it.plan_num)}}</td>
+                <td class="num">{{num(it.carton_qty)}}</td>
+                <td class="num">{{money(it.purchase_cost)}}</td>
+                <td>{{it.supplier_name || '-'}}</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h4 class="wiz-sec">发货计划<span class="muted" v-if="preview.shipment_plan && preview.shipment_plan.totals"> · {{num(preview.shipment_plan.totals.shipment_count)}} 货件 / {{num(preview.shipment_plan.totals.carton_num)}} 箱 / {{num(preview.shipment_plan.totals.qty)}} 件</span></h4>
+        <div v-for="(sh,si) in ((preview.shipment_plan && preview.shipment_plan.shipments) || [])" :key="si" class="ship-block">
+          <div class="ship-head">
+            <span class="badge b-cyan mono">{{sh.amazon_shipment_id || '-'}}</span>
+            <span class="chip chip-fwd">{{sh.fc_code || '-'}}</span>
+            <span v-if="sh.reference_id" class="chip mono">Ref {{sh.reference_id}}</span>
+            <span class="ship-stat">{{num(sh.carton_num)}} 箱 · {{num(sh.total_qty)}} 件</span>
+            <span v-if="sh.address" class="muted ship-addr ellipsis" :title="sh.address">📍 {{sh.address}}</span>
+          </div>
+          <table class="table sub boxes">
+            <thead><tr><th>MSKU</th><th class="num">数量</th><th class="num">箱数</th><th class="num">每箱数</th></tr></thead>
+            <tbody>
+              <tr v-for="(li,li2) in (sh.items||[])" :key="li2">
+                <td class="mono">{{li.msku || '-'}}</td>
+                <td class="num">{{num(li.qty)}}</td>
+                <td class="num">{{num(li.box_count)}}</td>
+                <td class="num">{{num(li.qty_per_box)}}</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </template>
+      <div v-else class="empty">暂无预览数据</div>
+    </div>
+
+    <template #foot>
+      <button v-if="syncStep>1" class="btn sm" :disabled="importing" @click="gotoStep(syncStep-1)">← 上一步</button>
+      <span class="flex-1"></span>
+      <button v-if="syncStep===1" class="btn sm primary" :disabled="!pickedPlan || candLoading" @click="toStep2">
+        下一步：配对发货数据
+      </button>
+      <button v-else-if="syncStep===2" class="btn sm primary" :disabled="!pickedCand || previewLoading" @click="toStep3">
+        下一步：预览确认
+      </button>
+      <button v-else class="btn primary" :class="{loading: importing}" :disabled="importing || previewLoading || !preview" @click="doImport">
+        {{importing ? '导入中…（约 20–60 秒）' : '确认导入'}}
+      </button>
+    </template>
+  </modal>
+
+  <!-- 离线导入发货单 Excel（次要入口） -->
+  <modal v-if="excelOpen" title="导入发货单 Excel" size="lg" @close="excelOpen=false">
+    <div class="modal-sub">API 拉不到的历史批次，可上传赛狐「发货单导出」xlsx 离线导入为新批次（人工修改字段不覆盖）。</div>
+    <label class="upload-zone" :class="{busy: excelBusy}">
+      <input type="file" accept=".xlsx,.xls" hidden :disabled="excelBusy" @change="excelImport">
+      <span class="up-ico">📤</span>
+      <span class="up-main">{{excelBusy ? '导入中…' : '点击上传发货单 Excel'}}</span>
+      <span class="up-sub">支持 .xlsx / .xls</span>
+    </label>
+  </modal>
+</div>
+</template>
+
+<!-- ===================== ① 批次详情 ===================== -->
+<template id="tpl-batch-detail">
+<div>
+  <div v-if="loading" class="empty">加载中…</div>
+  <div v-else-if="!batch" class="empty">批次不存在或已删除。<a class="link" href="#batches">返回批次列表</a></div>
+  <div v-else>
+    <div class="page-head">
+      <h2><a class="link" href="#batches">批次</a> <span class="sep">/</span> {{batch.name || batch.inbound_plan_id}}</h2>
+      <div class="head-ops">
+        <button class="btn" :class="{loading: resyncBusy}" :disabled="resyncBusy"
+                :title="isOffline ? '离线批次：重新上传发货单 Excel' : '从赛狐增量同步（人工修改字段不覆盖）'"
+                @click="resync">{{resyncBusy ? '同步中…' : '🔄 重新同步'}}</button>
+        <a class="btn" :href="'/api/batches/'+batch.id+'/zip'">📦 打包下载</a>
+      </div>
+    </div>
+
+    <!-- 页内标签页 -->
+    <div class="tabs">
+      <a tabindex="0" :class="{active: detailTab==='overview'}" @click="detailTab='overview'" @keydown.enter="detailTab='overview'">
+        概览<span v-if="reportErrors.length" class="tab-dot" title="校验未通过"></span>
+      </a>
+      <a tabindex="0" :class="{active: detailTab==='shipments'}" @click="detailTab='shipments'" @keydown.enter="detailTab='shipments'">
+        货件明细<span v-if="(batch.shipments||[]).length" class="tab-badge">{{(batch.shipments||[]).length}}</span>
+      </a>
+      <a tabindex="0" :class="{active: detailTab==='generate'}" @click="detailTab='generate'" @keydown.enter="detailTab='generate'">
+        生成文件<span v-if="(batch.docs||[]).length" class="tab-badge">{{(batch.docs||[]).length}}</span>
+      </a>
+    </div>
+
+    <!-- ============ 概览 tab ============ -->
+    <div v-show="detailTab==='overview'">
+      <!-- totals 统计卡 -->
+      <div v-if="Object.keys(totalChips).length" class="stats-row compact">
+        <div v-for="(v,k) in totalChips" :key="k" class="stat-card">
+          <span class="stat-icon">{{ ({'总箱数':'📦','总数量':'🔢','总毛重(kg)':'⚖️','总金额':'💰','货件数':'🚢','SKU数':'🏷️','总体积(m³)':'📐'})[k] || '📊' }}</span>
+          <div class="stat-body">
+            <div class="stat-label">{{k}}</div>
+            <div class="stat-value">{{v}}</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- 批次信息条 -->
+      <div class="card batch-meta compact">
+        <div class="kv"><label>状态</label><div><span class="badge" :class="badgeCls(batch.status)">{{batch.status}}</span></div></div>
+        <div class="kv"><label>基准日期</label><div>{{batch.base_date || '-'}}</div></div>
+        <div class="kv"><label>合同日期</label><input type="date" v-model="batch.contract_date" @change="saveBatch('contract_date')"></div>
+        <div class="kv"><label>工厂</label>
+          <select v-model="batch.factory_id" @change="saveBatch('factory_id')">
+            <option :value="null">未指定</option>
+            <option v-for="f in store.factories" :key="f.id" :value="f.id">{{f.name}}</option>
+          </select>
+        </div>
+        <div class="kv"><label>品牌 / 主体</label><div>{{batch.brand_name || '未绑定'}} / {{batch.company_name || '未绑定'}}</div></div>
+      </div>
+
+      <!-- 校验横幅 -->
+      <div v-if="report" class="banner" :class="reportErrors.length ? 'err' : 'ok'">
+        <div class="banner-title">
+          <span v-if="reportErrors.length">⚠ 校验未通过（{{reportErrors.length}} 项错误<template v-if="reportWarns.length">，{{reportWarns.length}} 项警告</template>）</span>
+          <span v-else>✓ 校验通过<template v-if="reportWarns.length">（{{reportWarns.length}} 项警告）</template></span>
+          <button class="btn sm" :class="{loading: validating}" :disabled="validating" @click="runValidate">{{validating?'校验中…':'重新校验'}}</button>
+        </div>
+        <div v-for="(e,i) in report.errors" :key="i" class="banner-line" :class="e.level">
+          <span class="dot"></span>
+          <span class="banner-msg">{{e.msg}}</span>
+          <a v-if="fixHref(e)" class="btn xs" :href="fixHref(e)">去修复 →</a>
+        </div>
+      </div>
+    </div>
+
+    <!-- ============ 货件明细 tab ============ -->
+    <div v-show="detailTab==='shipments'">
+      <div v-if="(batch.shipments||[]).length" class="ship-toolbar">
+        <button class="btn sm" @click="expandAllShips(true)">全部展开</button>
+        <button class="btn sm" @click="expandAllShips(false)">全部折叠</button>
+      </div>
+
+      <!-- 货件折叠卡 -->
+      <div v-for="s in batch.shipments" :key="s.id" class="card ship">
+        <div class="ship-summary" @click="toggleShip(s)">
+          <span class="caret" :class="{open: shipOpen[s.id]}">❯</span>
+          <span class="fba-no">{{s.amazon_shipment_id || s.ship_sn}}</span>
+          <span class="fc-badge">{{s.fc_code || '?'}}</span>
+          <span class="chip" :class="s.forwarder_name ? 'chip-fwd' : 'chip-warn'">🚚 {{s.forwarder_name || '货代未匹配'}}</span>
+          <span class="chip chip-stat">📦 {{num(s.carton_num)}} 箱</span>
+          <span class="chip chip-stat">🔢 {{shipQty(s)}} 件</span>
+          <span class="badge" :class="badgeCls(s.status)">{{s.status}}</span>
+        </div>
+
+        <div v-show="shipOpen[s.id]" class="ship-body">
+          <div class="ship-sub">
+            <span class="ref-id mono">Ref&thinsp;ID&nbsp;{{s.reference_id || '-'}}</span>
+          </div>
+          <div class="ship-addr">📍 {{addr(s) || '地址缺失'}}</div>
+
+          <table class="table sub">
+            <thead><tr>
+              <th>SKU</th><th>品名</th><th>数量</th><th>箱数</th><th>每箱数</th>
+              <th>箱规(cm)</th><th>申报单价</th><th>金额</th>
+            </tr></thead>
+            <tbody>
+              <tr v-for="it in s.items" :key="it.id">
+                <td class="mono">{{it.msku}}</td>
+                <td>
+                  {{it.product ? (it.product.name_customs_cn || it.product.name_invoice || '') : ''}}
+                  <span v-if="!it.product" class="badge red">产品库未匹配</span>
+                </td>
+                <td><input class="cell" type="number" v-model.number="it.qty" @change="saveItem(it,'qty')"></td>
+                <td><input class="cell" type="number" v-model.number="it.box_count" @change="saveItem(it,'box_count')"></td>
+                <td><input class="cell" type="number" v-model.number="it.qty_per_box" @change="saveItem(it,'qty_per_box')"></td>
+                <td><input class="cell wide" :value="dims(it)" placeholder="长×宽×高" @change="saveDims(it,$event.target.value)"></td>
+                <td><input class="cell" type="number" step="0.01" v-model.number="it.customs_unit_price" @change="saveItem(it,'customs_unit_price')"></td>
+                <td class="num">{{amount(it)}}</td>
+              </tr>
+            </tbody>
+          </table>
+
+          <div class="ship-foot">
+            <button class="collapse-btn" @click="toggleBoxes(s)">
+              <span class="caret" :class="{open: boxOpen[s.id]}">❯</span>
+              逐箱明细（{{s.boxes ? s.boxes.length : 0}}）
+            </button>
+            <div class="fwd-no">
+              <label>货代单号</label>
+              <input v-model="s.forwarder_order_no" placeholder="货代下单后回填，投保类模板解锁" @change="saveShipment(s,'forwarder_order_no')">
+            </div>
+          </div>
+
+          <table v-if="boxOpen[s.id]" class="table sub boxes">
+            <thead><tr><th>箱号</th><th>SKU</th><th>数量</th><th>尺寸(in)</th><th>重量(lb)</th></tr></thead>
+            <tbody>
+              <tr v-for="b in s.boxes" :key="b.id">
+                <td class="mono">{{b.box_id}}</td><td class="mono">{{b.msku}}</td><td>{{num(b.qty)}}</td>
+                <td>{{num(b.length_in)}} × {{num(b.width_in)}} × {{num(b.height_in)}}</td><td>{{num(b.weight_lb)}}</td>
+              </tr>
+              <tr v-if="!s.boxes || !s.boxes.length"><td colspan="5" class="empty">无逐箱数据</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+      <div v-if="!batch.shipments || !batch.shipments.length" class="card empty">该批次没有货件数据，请尝试重新同步。</div>
+    </div>
+
+    <!-- ============ 生成文件 tab ============ -->
+    <div v-show="detailTab==='generate'">
+      <!-- 精简校验提示 -->
+      <div v-if="reportErrors.length" class="banner err gen-validate-tip">
+        <div class="banner-line error">
+          <span class="dot"></span>
+          <span class="banner-msg">校验未通过 {{reportErrors.length}} 项，请先到「概览」查看并修复。</span>
+          <a class="btn xs" tabindex="0" @click="detailTab='overview'" @keydown.enter="detailTab='overview'">去概览 →</a>
+        </div>
+      </div>
+
+      <!-- 生成区 -->
+      <div class="card">
+        <h3>生成文件</h3>
+        <template v-for="g in templateGroups" :key="g.label">
+          <div v-if="g.list.length" class="tpl-group">
+            <div class="group-title">{{g.label}}</div>
+            <label v-for="t in g.list" :key="t.id" class="tpl-check" :class="{off: !t.active, selected: t.active && selectedTplIds.includes(t.id)}">
+              <input type="checkbox" v-model="selectedTplIds" :value="t.id" :disabled="!t.active">
+              <span class="tpl-name">{{t.name}}</span>
+              <span class="muted">{{t.doc_type}} · {{granLabel(t.granularity)}}</span>
+              <span v-if="!t.active" class="badge red">未启用</span>
+              <span v-if="lockReason(t)" class="lock" :title="lockReason(t)">🔒 {{lockReason(t)}}</span>
+              <button class="btn xs tpl-preview" :class="{loading: previewBusyId===t.id}"
+                      title="预览将写入的数据（不生成文件）"
+                      @click.prevent.stop="openPreview(t)">👁 预览</button>
+            </label>
+          </div>
+        </template>
+        <div v-if="!templates.length" class="empty">还没有模板，先去「货代 & 模板」上传并配置。</div>
+        <div class="gen-bar">
+          <button class="btn primary lg" :class="{loading: generating}" :disabled="generating || !report || reportErrors.length>0 || !selectedTplIds.length" @click="doGenerate">
+            {{generating ? '生成中…' : '⚡ 一键生成（'+selectedTplIds.length+' 个模板）'}}
+          </button>
+          <span v-if="reportErrors.length" class="warn-text">校验未通过，请先修复错误</span>
+          <span v-else-if="!selectedTplIds.length && templates.length" class="muted">请先勾选模板</span>
+        </div>
+        <div v-if="genErrors.length" class="gen-errors">
+          <div class="group-title">生成过程提示</div>
+          <div v-for="(e,i) in genErrors" :key="i" class="banner-line warn">
+            <span class="dot"></span><span class="banner-msg">{{genErrText(e)}}</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- 文件区：按 (模板, 货件) 分组只平铺最新一份，旧版本折叠为「历史 N」 -->
+      <div class="card">
+        <div class="row-between">
+          <h3>已生成文件 <span class="badge grey">{{(batch.docs||[]).length}}</span></h3>
+          <a v-if="(batch.docs||[]).length" class="btn sm" :href="'/api/batches/'+batch.id+'/zip'">📦 打包下载</a>
+        </div>
+        <table v-if="(batch.docs||[]).length" class="table">
+          <thead><tr><th>文件名</th><th>类型</th><th>货件</th><th>生成时间</th><th class="op"></th></tr></thead>
+          <tbody>
+            <template v-for="g in docGroups" :key="g.key">
+              <tr>
+                <td class="ellipsis" :title="g.latest.filename">{{g.latest.filename}}</td>
+                <td>{{g.latest.doc_type || '-'}}</td>
+                <td>{{shipLabel(g.latest.shipment_id)}}</td>
+                <td class="muted">{{fmtTime(g.latest.created_at)}}</td>
+                <td class="op">
+                  <button v-if="g.history.length" class="btn xs" :title="'展开 '+g.history.length+' 个旧版本'"
+                          @click="histOpen[g.key]=!histOpen[g.key]">{{histOpen[g.key] ? '收起' : '历史 '+g.history.length}}</button>
+                  <button class="icon-action" title="预览文件内容" @click="previewDoc=g.latest">👁</button>
+                  <a class="icon-action" title="下载" :href="'/api/docs/'+(g.latest.id ?? g.latest.doc_id)+'/download'">⬇️</a>
+                  <button class="icon-action" title="删除" @click="delDoc(g.latest)">🗑️</button>
+                </td>
+              </tr>
+              <template v-if="histOpen[g.key]">
+                <tr v-for="d in g.history" :key="d.id || d.doc_id" class="ver-old">
+                  <td class="ellipsis" :title="d.filename"><span class="ver-tag">旧</span>{{d.filename}}</td>
+                  <td>{{d.doc_type || '-'}}</td>
+                  <td>{{shipLabel(d.shipment_id)}}</td>
+                  <td class="muted">{{fmtTime(d.created_at)}}</td>
+                  <td class="op">
+                    <button class="icon-action" title="预览文件内容" @click="previewDoc=d">👁</button>
+                    <a class="icon-action" title="下载" :href="'/api/docs/'+(d.id ?? d.doc_id)+'/download'">⬇️</a>
+                    <button class="icon-action" title="删除" @click="delDoc(d)">🗑️</button>
+                  </td>
+                </tr>
+              </template>
+            </template>
+          </tbody>
+        </table>
+        <div v-else class="empty">📄 暂无生成文件 — 校验通过后勾选模板，点「⚡ 一键生成」。</div>
+      </div>
+    </div>
+
+    <!-- 离线批次重新导入 -->
+    <modal v-if="offlineOpen" title="离线批次重新导入" @close="offlineOpen=false">
+      <div class="modal-sub">离线批次无法从赛狐增量同步。请重新上传赛狐「发货单导出」Excel：同一文件将幂等更新本批次（人工修改字段不覆盖）。</div>
+      <label class="upload-zone" :class="{busy: offlineBusy}">
+        <input type="file" accept=".xlsx,.xls" hidden :disabled="offlineBusy" @change="offlineImport">
+        <span class="up-ico">📤</span>
+        <span class="up-main">{{offlineBusy ? '导入中…' : '点击上传发货单 Excel'}}</span>
+        <span class="up-sub">支持 .xlsx / .xls</span>
+      </label>
+    </modal>
+
+    <!-- 生成前数据预览 -->
+    <modal v-if="previewData" :title="'生成预览 — ' + (previewTpl ? previewTpl.name : '')" size="xl" @close="previewData=null">
+      <div class="modal-sub">以下为将写入模板的数据清单（未生成文件）。明细区仅预览前 5 行。</div>
+      <div v-if="previewData.groups.length>1" class="tabs">
+        <a v-for="(g,i) in previewData.groups" :key="i" tabindex="0" :class="{active: previewTab===i}"
+           @click="previewTab=i" @keydown.enter="previewTab=i">{{g.label}}<span v-if="g.skipped"> 🔒</span></a>
+      </div>
+      <template v-for="(g,i) in previewData.groups" :key="i">
+        <div v-if="previewTab===i">
+          <div v-if="g.skipped" class="banner err"><div class="banner-line warn"><span class="dot"></span><span class="banner-msg">{{g.skipped}}</span></div></div>
+          <template v-else>
+            <div v-if="g.filename" class="hint">输出文件名：<b class="mono">{{g.filename}}</b></div>
+            <div v-if="g.errors && g.errors.length" class="gen-errors">
+              <div v-for="(e,j) in g.errors" :key="j" class="banner-line warn">
+                <span class="dot"></span><span class="banner-msg">{{e}}</span>
+              </div>
+            </div>
+            <table v-if="g.cells.length" class="table sub">
+              <thead><tr><th>工作表</th><th>单元格</th><th>字段</th><th>值</th></tr></thead>
+              <tbody>
+                <tr v-for="(c,j) in g.cells" :key="j">
+                  <td>{{c.sheet}}</td>
+                  <td class="mono">{{c.target}}<span v-if="c.anchor" class="muted">（锚点「{{c.anchor}}」）</span></td>
+                  <td>{{fieldLabel(c.path) || c.path}}<div v-if="fieldLabel(c.path)" class="muted mono prev-path">{{c.path}}</div></td>
+                  <td>{{fmtVal(c.value)}}</td>
+                </tr>
+              </tbody>
+            </table>
+            <div v-for="(t,j) in g.tables" :key="'tb'+j" class="prev-table">
+              <div class="group-title">明细区 {{t.source}} — {{t.sheet}} 第 {{t.start_row}} 行起 · 共 {{t.total}} 行<template v-if="t.total>t.rows.length">（预览前 {{t.rows.length}} 行）</template></div>
+              <div class="xl-wrap">
+                <table class="table sub">
+                  <thead><tr><th v-for="col in t.columns" :key="col.col"><span class="mono">{{col.col}}</span><div class="muted prev-path">{{fieldLabel(col.path) || col.path}}</div></th></tr></thead>
+                  <tbody>
+                    <tr v-for="(row,k) in t.rows" :key="k">
+                      <td v-for="(cell,m2) in row" :key="m2" :title="cell.path">{{fmtVal(cell.value)}}</td>
+                    </tr>
+                    <tr v-if="!t.rows.length"><td :colspan="t.columns.length || 1" class="empty">无数据行</td></tr>
+                  </tbody>
+                </table>
+              </div>
+            </div>
+            <div v-if="!g.cells.length && !g.tables.length" class="empty">该模板映射没有可预览的写入项</div>
+          </template>
+        </div>
+      </template>
+    </modal>
+
+    <!-- Excel 文件预览 -->
+    <doc-preview v-if="previewDoc" :doc-id="previewDoc.id ?? previewDoc.doc_id" :filename="previewDoc.filename"
+                 @close="previewDoc=null"></doc-preview>
+  </div>
+</div>
+</template>
+
+<!-- ===================== 采购确认 ===================== -->
+<template id="tpl-purchase">
+<div>
+  <div class="page-head">
+    <h2>采购确认</h2>
+    <div class="head-ops">
+      <button class="btn sm" :disabled="plansLoading" @click="loadPlans(planPage)">🔄 刷新</button>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="modal-sub">从赛狐「待采购」的采购计划接手：核对明细后一键生成采购单并下单，直接进入待到货。采购计划的待审核审批由采购员在赛狐完成（两边并行）。</div>
+    <div class="tabs status-tabs">
+      <a v-for="s in ['全部','待审核','待采购','已采购','已驳回']" :key="s" tabindex="0"
+         :class="{active: planStatus===s}" @click="setPlanStatus(s)" @keydown.enter="setPlanStatus(s)">
+        {{s}} <span class="badge grey" v-if="statusCounts[s]!=null">{{statusCounts[s]}}</span>
+      </a>
+    </div>
+    <div v-if="plansLoading" class="empty">正在请求采购计划列表…</div>
+    <template v-else-if="plans.length">
+      <div class="plan-list">
+        <div v-for="p in plans" :key="p.plan_group_no" class="plan-card pick"
+             :class="{picked: picked && picked.plan_group_no===p.plan_group_no}"
+             tabindex="0" @click="pick(p)" @keydown.enter="pick(p)">
+          <div class="plan-pick-body">
+            <div class="plan-name" :title="p.plan_group_no">
+              <span class="pick-radio" :class="{on: picked && picked.plan_group_no===p.plan_group_no}"></span>
+              📋 {{p.plan_group_no}}
+              <span class="badge" :class="planStatusCls(p.status_label)">{{p.status_label || '—'}}</span>
+              <span class="badge b-blue">计划 {{num(p.plan_total_num)}}</span>
+              <!-- 确认状态徽章 -->
+              <span v-if="confState(p)" class="badge" :class="confCls(confState(p).status)">
+                {{confState(p).status}}<template v-if="confState(p).purchase_no"> · {{confState(p).purchase_no}}</template>
+              </span>
+              <span v-else-if="confLoading[p.plan_group_no]" class="chip">确认状态查询中…</span>
+            </div>
+            <div class="plan-meta">
+              <span>👤 {{p.create_name || '-'}}</span>
+              <span>🕐 {{p.create_time || '-'}}</span>
+              <span>📦 总量 {{num(p.plan_total_num)}}</span>
+              <span v-if="p.imported" class="badge b-green">已导入批次</span>
+            </div>
+            <div class="pick-items">
+              <div v-for="(it,ix) in (p.items||[])" :key="ix" class="pick-item">
+                <img class="thumb" v-if="it.main_image" :src="it.main_image" alt="" loading="lazy" referrerpolicy="no-referrer" @error="it.main_image=''">
+                <span v-else class="thumb thumb-ph">📦</span>
+                <span class="pi-name ellipsis" :title="it.commodity_name">{{it.commodity_name || it.sku}}</span>
+                <span v-if="it.shop_name || it.site_name" class="chip chip-stat">{{[it.shop_name, it.site_name].filter(Boolean).join(' / ')}}</span>
+                <span class="pi-num">计划 {{num(it.plan_num)}}</span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="wiz-pager">
+        <button class="btn sm" :disabled="planPage<=1 || plansLoading" @click="loadPlans(planPage-1)">← 上一页</button>
+        <span class="page-ind">第 {{planPage}} 页 · 共 {{num(planTotal)}} 个</span>
+        <button class="btn sm" :disabled="plansLoading || planPage*planPageSize>=planTotal" @click="loadPlans(planPage+1)">下一页 →</button>
+      </div>
+    </template>
+    <div v-else class="empty-state">
+      <div class="empty-ico">🏭</div>
+      <div class="empty-title">没有可确认的采购计划</div>
+      <div class="empty-sub">赛狐采购计划同步后将在此列出，工厂确认后可一键生成采购单。</div>
+    </div>
+  </div>
+
+  <!-- 确认面板（选中后弹窗） -->
+  <modal v-if="picked" :title="'采购确认 — ' + picked.plan_group_no" size="xl" @close="close">
+    <!-- 采购流程状态链 -->
+    <div class="flow-steps">
+      <template v-for="(st,ix) in flowSteps" :key="st">
+        <span class="flow-step" :class="{done: flowIdx(effStatus)>ix, cur: effStatus===st}">
+          <span class="flow-dot">{{ flowIdx(effStatus)>ix ? '✓' : (ix+1) }}</span>
+          <span class="flow-label">{{st}}</span>
+        </span>
+        <span v-if="ix<flowSteps.length-1" class="flow-line" :class="{done: flowIdx(effStatus)>ix}"></span>
+      </template>
+    </div>
+    <div class="banner" :class="(effStatus==='已完成') ? 'ok' : ''">
+      <div class="banner-title">
+        <span class="badge" :class="confCls(effStatus)">{{effStatus}}</span>
+        <template v-if="curConf && curConf.purchase_no"> 赛狐采购单号 <b class="mono">{{curConf.purchase_no}}</b></template>
+        <span v-if="curConf && curConf.po_status_label" class="chip chip-stat">赛狐采购单状态：{{curConf.po_status_label}}</span>
+      </div>
+    </div>
+
+    <!-- 采购明细（只读预览） -->
+    <h4 class="wiz-sec">采购明细<span class="muted"> · 来自赛狐采购计划</span></h4>
+    <div class="table-wrap">
+      <table class="table sub">
+        <thead><tr>
+          <th>图</th><th>品名</th><th>SKU</th>
+          <th class="num">数量</th><th class="num">箱数</th>
+        </tr></thead>
+        <tbody>
+          <tr v-for="(it,ix) in rows" :key="ix">
+            <td><img class="thumb sm" v-if="it.main_image" :src="it.main_image" alt="" loading="lazy" referrerpolicy="no-referrer" @error="it.main_image=''"><span v-else class="thumb sm thumb-ph">📦</span></td>
+            <td class="ellipsis" :title="it.commodity_name">{{it.commodity_name || '-'}}</td>
+            <td class="mono">{{it.sku || '-'}}</td>
+            <td class="num">{{num(it.num)}}</td>
+            <td class="num">{{num(it.box_count)}}</td>
+          </tr>
+          <tr v-if="!rows.length"><td colspan="5" class="empty">该计划无明细</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <!-- 补全信息 -->
+    <div class="card batch-meta compact purchase-meta">
+      <div class="kv"><label>店铺主体</label><div>{{shopName || '未识别'}}</div></div>
+      <div class="kv"><label>站点</label><div>{{siteName}}</div></div>
+      <div class="kv"><label>品牌</label><div>{{brandName || '-'}}</div></div>
+      <div class="kv"><label>供应商</label><div>{{supplierName}}<span class="muted"> （按品牌：链条系→杭州朗格链条 / 其他→嘉欣）</span></div></div>
+    </div>
+
+    <template #foot>
+      <span class="muted flow-hint">
+        待采购 →〔生成采购单·自动下单〕→ 待到货 →〔到货〕→ 已完成
+      </span>
+      <!-- 删除本地记录（只删本系统，不碰赛狐 PO） -->
+      <button v-if="curConf && curConf.status" class="btn sm ghost" title="只删除本系统的采购确认记录，不影响赛狐采购单" @click="doDeleteLocal">
+        🗑 删除本地记录
+      </button>
+      <!-- 已有采购单：作废按钮（回退到待采购，可重新生成；已完成的单赛狐多半拒绝） -->
+      <button v-if="curConf && curConf.purchase_no" class="btn danger sm"
+              :class="{loading: cancelling}" :disabled="cancelling" @click="doCancel">
+        {{cancelling ? '作废中…' : '✕ 作废采购单'}}
+      </button>
+      <span class="flex-1"></span>
+      <button v-if="effStatus==='待采购'" class="btn primary" :disabled="!rows.length" @click="openOrder">
+        🏭 生成采购单并下单
+      </button>
+      <button v-if="effStatus==='待下单'" class="btn primary"
+              :class="{loading: submitting}" :disabled="submitting" @click="doSubmitOrder">
+        {{submitting ? '下单中…' : '📤 下单（写入赛狐）'}}
+      </button>
+      <button v-if="effStatus==='待到货'" class="btn primary" @click="openArrival">
+        📥 到货
+      </button>
+      <span v-if="effStatus==='已完成'" class="badge b-green">✓ 采购流程已完成</span>
+    </template>
+  </modal>
+
+  <!-- 到货登记弹窗 -->
+  <modal v-if="arrivalOpen" title="到货登记 — 填写实收良品 / 次品数" size="lg" @close="arrivalOpen=false">
+    <div class="banner err">
+      <div class="banner-title">⚠ 将在赛狐对采购单登记到货（写操作）</div>
+      <div class="banner-line warn"><span class="dot"></span>
+        <span class="banner-msg">默认良品数=采购数量、次品数=0，按实收修改后提交。</span></div>
+    </div>
+    <div class="table-wrap">
+      <table class="table sub">
+        <thead><tr><th>图</th><th>品名</th><th>SKU</th><th class="num">良品数</th><th class="num">次品数</th></tr></thead>
+        <tbody>
+          <tr v-for="(it,ix) in arrivalRows" :key="ix">
+            <td><img class="thumb sm" v-if="it.main_image" :src="it.main_image" alt="" loading="lazy" referrerpolicy="no-referrer" @error="it.main_image=''"><span v-else class="thumb sm thumb-ph">📦</span></td>
+            <td class="ellipsis" :title="it.commodity_name">{{it.commodity_name || '-'}}</td>
+            <td class="mono">{{it.sku || '-'}}</td>
+            <td><input class="cell" type="number" min="0" v-model.number="it.goods"></td>
+            <td><input class="cell" type="number" min="0" v-model.number="it.defective"></td>
+          </tr>
+          <tr v-if="!arrivalRows.length"><td colspan="5" class="empty">无明细</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <template #foot>
+      <div class="field order-action">
+        <label>到货类型</label>
+        <select v-model.number="arrivalType">
+          <option :value="0">正常到货</option>
+          <option :value="1">快捷到货</option>
+        </select>
+      </div>
+      <span class="flex-1"></span>
+      <button class="btn" :disabled="arriving" @click="arrivalOpen=false">取消</button>
+      <button class="btn primary" :class="{loading: arriving}" :disabled="arriving || !arrivalRows.length" @click="doArrival">
+        {{arriving ? '登记中…' : '确认到货（写入赛狐）'}}
+      </button>
+    </template>
+  </modal>
+
+  <!-- 生成采购单预览弹窗（二次确认） -->
+  <modal v-if="orderOpen" title="生成采购单 — 核对将发送给赛狐的内容" size="xl" @close="orderOpen=false">
+    <div class="banner err">
+      <div class="banner-title">⚠ 将在赛狐创建采购单（写操作）</div>
+      <div class="banner-line warn">
+        <span class="dot"></span>
+        <span class="banner-msg">确认后将一步完成：建采购单 → 下单 → 按采购量全部良品到货 → 已完成。这是赛狐写操作，核对明细无误再点底部按钮。</span>
+      </div>
+    </div>
+
+    <div v-if="orderLoading" class="empty">正在生成预览…</div>
+    <template v-else-if="orderPreview">
+      <div class="card batch-meta compact purchase-meta">
+        <div class="kv"><label>仓库</label><div>{{orderPreview.warehouse_name || ('#' + (orderPreview.warehouseId ?? '-'))}}</div></div>
+        <div class="kv"><label>供应商</label><div>{{orderPreview.supplier_name || ('#' + (orderPreview.supplierId ?? '-'))}}</div></div>
+        <div class="kv"><label>是否含税</label><div>{{orderPreview.includeTax ? '含税' : '不含税'}}</div></div>
+        <div class="kv"><label>关联计划号</label><div class="mono">{{picked && picked.plan_group_no}}</div></div>
+      </div>
+
+      <h4 class="wiz-sec">采购明细<span class="muted"> · 共 {{num((orderPreview.items||[]).length)}} 行</span></h4>
+      <div class="table-wrap">
+        <table class="table sub fixed">
+          <colgroup>
+            <col><col style="width:88px"><col style="width:96px"><col style="width:150px">
+          </colgroup>
+          <thead><tr>
+            <th>SKU</th><th class="num">数量</th><th class="num">单价</th><th>关联计划号</th>
+          </tr></thead>
+          <tbody>
+            <tr v-for="(it,ix) in (orderPreview.items||[])" :key="ix">
+              <td class="mono ellipsis" :title="it.sku">{{it.sku || '-'}}</td>
+              <td class="num">{{num(it.num)}}</td>
+              <td class="num">{{money(it.perPurchase)}}</td>
+              <td class="mono">{{it.purchasePlanNo || (picked && picked.plan_group_no)}}</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+      <div v-if="orderRaw" class="hint">原始请求体已就绪，可在下方选择处理动作。</div>
+    </template>
+    <div v-else class="empty">暂无预览数据</div>
+
+    <template #foot>
+      <span class="muted">一步到底：建单 · 下单 · 到货 → 已完成</span>
+      <label class="force-check" title="勾选后即使赛狐已有关联此计划的采购单也会再建一张（重复单）">
+        <input type="checkbox" v-model="orderForce"> 强制生成<span class="muted">（绕过防重）</span>
+      </label>
+      <span class="flex-1"></span>
+      <button class="btn" :disabled="orderCreating" @click="orderOpen=false">取消</button>
+      <button class="btn primary" :class="{loading: orderCreating}" :disabled="orderCreating || orderLoading || !orderPreview" @click="doCreate">
+        {{orderCreating ? '生成中…' : '确认生成（建单·下单·到货）'}}
+      </button>
+    </template>
+  </modal>
+</div>
+</template>
+
+<!-- ===================== ② 产品库 ===================== -->
+<template id="tpl-products">
+<div>
+  <div class="page-head">
+    <h2>产品库</h2>
+    <div class="head-ops">
+      <input class="search" v-model="q" placeholder="搜索 SKU / 品名…">
+      <a class="btn" href="/api/products/import-template">下载导入模板</a>
+      <label class="btn" :class="{loading: importBusy}">
+        {{importBusy ? '导入中…' : 'Excel 导入'}}
+        <input type="file" accept=".xlsx,.xls" hidden :disabled="importBusy" @change="onImport">
+      </label>
+      <button class="btn primary" @click="openEdit(null)">＋ 新增产品</button>
+    </div>
+  </div>
+  <div class="card">
+    <div v-if="loading" class="empty">加载中…</div>
+    <table v-else-if="filtered.length" class="table">
+      <thead><tr><th>SKU</th><th>中文报关名</th><th>HS编码</th><th>申报单价</th><th>完整度</th><th class="op"></th></tr></thead>
+      <tbody>
+        <tr v-for="p in filtered" :key="p.id">
+          <td class="mono">{{p.sku}}</td>
+          <td>{{p.name_customs_cn || '-'}}</td>
+          <td class="mono">{{p.hs_code || '-'}}</td>
+          <td class="num">{{money(p.unit_price_default)}} {{p.currency||''}}</td>
+          <td>
+            <span v-if="!missing(p).length" class="badge b-green">完整</span>
+            <span v-else class="badge red" :title="'缺：'+missing(p).join('、')">缺{{missing(p).length}}项</span>
+          </td>
+          <td class="op">
+            <button class="icon-action" title="编辑" @click="openEdit(p)">✏️</button>
+            <button class="icon-action" title="删除" @click="del(p)">🗑️</button>
+          </td>
+        </tr>
+      </tbody>
+    </table>
+    <div v-else-if="list.length" class="empty-state">
+      <div class="empty-ico">🔍</div>
+      <div class="empty-title">没有匹配「{{q}}」的产品</div>
+      <div class="empty-sub">换个关键词试试，支持按 SKU、中英文报关名、发票用名搜索。</div>
+    </div>
+    <div v-else class="empty-state">
+      <div class="empty-ico">🗂️</div>
+      <div class="empty-title">产品库为空</div>
+      <div class="empty-sub">可点上方「Excel 导入」上传现有“商品列表-报关”表格批量建库，或手工新增单个产品。</div>
+      <button class="btn primary" @click="openEdit(null)">＋ 新增产品</button>
+    </div>
+  </div>
+
+  <modal v-if="editing" :title="editing.id ? '编辑产品 #'+editing.id : '新增产品'" size="lg" @close="editing=null">
+    <div class="form-section">基本信息</div>
+    <div class="form-grid">
+      <div class="field"><label>SKU（=MSKU）*</label><input v-model="editing.sku"></div>
+      <div class="field"><label>品牌</label><input v-model="editing.brand_name"></div>
+      <div class="field"><label>型号</label><input v-model="editing.model"></div>
+      <div class="field"><label>图片URL</label><input v-model="editing.image_url"></div>
+    </div>
+    <div class="form-section">品名（5 种变体）</div>
+    <div class="form-grid">
+      <div class="field"><label>中文报关名</label><input v-model="editing.name_customs_cn"></div>
+      <div class="field"><label>英文报关名</label><input v-model="editing.name_customs_en"></div>
+      <div class="field"><label>合同用品名</label><input v-model="editing.name_contract"></div>
+      <div class="field"><label>发票/箱单用名</label><input v-model="editing.name_invoice"></div>
+      <div class="field"><label>用途功能名</label><input v-model="editing.name_usage"></div>
+    </div>
+    <div class="form-section">报关信息</div>
+    <div class="form-grid">
+      <div class="field"><label>HS编码</label><input v-model="editing.hs_code"></div>
+      <div class="field"><label>材质</label><input v-model="editing.material"></div>
+      <div class="field"><label>用途</label><input v-model="editing.usage"></div>
+      <div class="field full"><label>申报要素</label><textarea rows="2" v-model="editing.declare_elements"></textarea></div>
+    </div>
+    <div class="form-section">默认值</div>
+    <div class="form-grid">
+      <div class="field"><label>单箱重量(kg)</label><input type="number" step="0.01" v-model.number="editing.box_weight_kg"></div>
+      <div class="field"><label>申报单价默认值</label><input type="number" step="0.01" v-model.number="editing.unit_price_default"></div>
+      <div class="field"><label>采购成本默认值</label><input type="number" step="0.01" v-model.number="editing.purchase_cost_default"></div>
+      <div class="field"><label>币制</label><input v-model="editing.currency"></div>
+      <div class="field full"><label>备注</label><textarea rows="2" v-model="editing.remark"></textarea></div>
+    </div>
+    <template #foot>
+      <button class="btn" @click="editing=null">取消</button>
+      <button class="btn primary" :class="{loading: saving}" :disabled="saving" @click="save">{{saving?'保存中…':'保存'}}</button>
+    </template>
+  </modal>
+</div>
+</template>
+
+<!-- ===================== ③ 工厂管理 ===================== -->
+<template id="tpl-factories">
+<div>
+  <div class="page-head">
+    <h2>工厂管理</h2>
+    <button class="btn primary" @click="openEdit(null)">＋ 新增工厂</button>
+  </div>
+  <div class="card">
+    <div v-if="loading" class="empty">加载中…</div>
+    <table v-else-if="list.length" class="table">
+      <thead><tr><th>名称</th><th>缩写</th><th>地址</th><th>联系人</th><th>电话</th><th>税号</th><th>状态</th><th class="op"></th></tr></thead>
+      <tbody>
+        <tr v-for="f in list" :key="f.id" :class="{'row-off': f.active===false}">
+          <td>{{f.name}}</td><td class="mono">{{f.abbr}}</td>
+          <td class="muted">{{f.address || '-'}}</td><td>{{f.contact || '-'}}</td>
+          <td>{{f.phone || '-'}}</td><td class="mono">{{f.tax_no || '-'}}</td>
+          <td><span class="badge" :class="f.active===false ? 'red' : 'b-green'">{{f.active===false ? '已停用' : '启用中'}}</span></td>
+          <td class="op">
+            <button v-if="f.active===false" class="btn sm" @click="enable(f)">重新启用</button>
+            <template v-else>
+              <button class="icon-action" title="编辑" @click="openEdit(f)">✏️</button>
+              <button class="icon-action" title="删除" @click="del(f)">🗑️</button>
+            </template>
+          </td>
+        </tr>
+      </tbody>
+    </table>
+    <div v-else class="empty-state">
+      <div class="empty-ico">🏭</div>
+      <div class="empty-title">还没有工厂</div>
+      <div class="empty-sub">可手工新增，或在「主体与品牌 → 品牌绑定」导入工厂信息库一并初始化。</div>
+      <button class="btn primary" @click="openEdit(null)">＋ 新增工厂</button>
+    </div>
+  </div>
+
+  <modal v-if="editing" :title="editing.id ? '编辑工厂' : '新增工厂'" @close="editing=null">
+    <div class="form-grid">
+      <div class="field"><label>名称 *</label><input v-model="editing.name"></div>
+      <div class="field"><label>缩写</label><input v-model="editing.abbr" placeholder="LG / YY / ZE…"></div>
+      <div class="field full"><label>地址</label><input v-model="editing.address"></div>
+      <div class="field"><label>电话</label><input v-model="editing.phone"></div>
+      <div class="field"><label>联系人</label><input v-model="editing.contact"></div>
+      <div class="field"><label>税号</label><input v-model="editing.tax_no"></div>
+      <div class="field full"><label>银行信息</label><textarea rows="2" v-model="editing.bank_info"></textarea></div>
+      <div class="field full"><label>备注</label><textarea rows="2" v-model="editing.remark"></textarea></div>
+    </div>
+    <template #foot>
+      <button class="btn" @click="editing=null">取消</button>
+      <button class="btn primary" :class="{loading: saving}" :disabled="saving" @click="save">{{saving?'保存中…':'保存'}}</button>
+    </template>
+  </modal>
+</div>
+</template>
+
+<!-- ===================== ④ 主体与品牌 ===================== -->
+<template id="tpl-companies">
+<div>
+  <div class="page-head"><h2>主体与品牌</h2></div>
+  <div class="tabs">
+    <a tabindex="0" :class="{active: tab==='shop'}" @click="setTab('shop')" @keydown.enter="setTab('shop')">店铺主体</a>
+    <a tabindex="0" :class="{active: tab==='trade'}" @click="setTab('trade')" @keydown.enter="setTab('trade')">外贸主体</a>
+    <a tabindex="0" :class="{active: tab==='brands'}" @click="setTab('brands')" @keydown.enter="setTab('brands')">品牌绑定</a>
+  </div>
+
+  <!-- 店铺/外贸主体 -->
+  <div v-if="tab!=='brands'" class="card">
+    <div class="row-between">
+      <h3>{{tab==='shop' ? '店铺主体' : '外贸主体（星盟等）'}}</h3>
+      <button class="btn primary" @click="openCompany(null)">＋ 新增</button>
+    </div>
+    <table v-if="companyList.length" class="table">
+      <thead><tr><th>中文名</th><th>英文名</th><th>缩写</th><th>保价倍率</th><th>经星盟出口</th><th>默认起运港</th><th>状态</th><th class="op"></th></tr></thead>
+      <tbody>
+        <tr v-for="c in companyList" :key="c.id" :class="{'row-off': c.active===false}">
+          <td>{{c.name_cn}}</td><td class="muted">{{c.name_en || '-'}}</td><td class="mono">{{c.abbr || '-'}}</td>
+          <td class="num">×{{c.insurance_factor ?? 1}}</td>
+          <td>{{c.export_via_trade ? '是' : '否'}}</td>
+          <td>{{c.default_port || '-'}}</td>
+          <td><span class="badge" :class="c.active===false ? 'red' : 'b-green'">{{c.active===false ? '已停用' : '启用中'}}</span></td>
+          <td class="op">
+            <button v-if="c.active===false" class="btn sm" @click="enableCompany(c)">重新启用</button>
+            <template v-else>
+              <button class="icon-action" title="编辑" @click="openCompany(c)">✏️</button>
+              <button class="icon-action" title="删除" @click="delCompany(c)">🗑️</button>
+            </template>
+          </td>
+        </tr>
+      </tbody>
+    </table>
+    <div v-else class="empty-state">
+      <div class="empty-ico">🏢</div>
+      <div class="empty-title">{{tab==='shop' ? '还没有店铺主体' : '还没有外贸主体'}}</div>
+      <div class="empty-sub">可手工新增，或在「品牌绑定」标签页导入工厂信息库自动初始化。</div>
+      <button class="btn primary" @click="openCompany(null)">＋ 新增{{tab==='shop' ? '店铺主体' : '外贸主体'}}</button>
+    </div>
+  </div>
+
+  <!-- 品牌绑定 -->
+  <div v-else class="card">
+    <div class="row-between">
+      <h3>品牌绑定（品牌 → 工厂 + 店铺主体 + 编号规则）</h3>
+      <div class="head-ops">
+        <label class="btn" :class="{loading: importBusy}">
+          {{importBusy ? '导入中…' : '导入工厂信息库'}}
+          <input type="file" accept=".xlsx,.xls" hidden :disabled="importBusy" @change="onBrandImport">
+        </label>
+        <button class="btn primary" @click="openBrand(null)">＋ 新增品牌</button>
+      </div>
+    </div>
+    <table v-if="store.brands.length" class="table">
+      <thead><tr><th>品牌</th><th>缩写</th><th>工厂</th><th>店铺主体</th><th>货件编号规则</th><th>采购合同编号规则</th><th>状态</th><th class="op"></th></tr></thead>
+      <tbody>
+        <tr v-for="b in store.brands" :key="b.id" :class="{'row-off': b.active===false}">
+          <td>{{b.name}}</td><td class="mono">{{b.abbr2}}</td>
+          <td>{{b.factory_name || nameOf('factories', b.factory_id)}}</td>
+          <td>{{b.company_name || nameOf('companies', b.company_id)}}</td>
+          <td class="mono">{{b.doc_no_rule_shipment}}</td>
+          <td class="mono">{{b.doc_no_rule_purchase}}</td>
+          <td><span class="badge" :class="b.active===false ? 'red' : 'b-green'">{{b.active===false ? '已停用' : '启用中'}}</span></td>
+          <td class="op">
+            <button v-if="b.active===false" class="btn sm" @click="enableBrand(b)">重新启用</button>
+            <template v-else>
+              <button class="icon-action" title="编辑" @click="openBrand(b)">✏️</button>
+              <button class="icon-action" title="删除" @click="delBrand(b)">🗑️</button>
+            </template>
+          </td>
+        </tr>
+      </tbody>
+    </table>
+    <div v-else class="empty-state">
+      <div class="empty-ico">🔗</div>
+      <div class="empty-title">还没有品牌绑定</div>
+      <div class="empty-sub">建议直接「导入工厂信息库」（店铺主体-工厂信息库.xlsx），自动创建工厂、主体与品牌绑定。</div>
+      <button class="btn primary" @click="openBrand(null)">＋ 新增品牌</button>
+    </div>
+  </div>
+
+  <!-- 主体编辑弹窗 -->
+  <modal v-if="companyForm" :title="(companyForm.id?'编辑':'新增') + (tab==='shop'?'店铺主体':'外贸主体')" size="lg" @close="companyForm=null">
+    <div class="form-section">基本信息</div>
+    <div class="form-grid">
+      <div class="field"><label>中文名 *</label><input v-model="companyForm.name_cn"></div>
+      <div class="field"><label>英文名</label><input v-model="companyForm.name_en"></div>
+      <div class="field full"><label>中文地址</label><input v-model="companyForm.address_cn"></div>
+      <div class="field full"><label>英文地址</label><input v-model="companyForm.address_en"></div>
+      <div class="field"><label>缩写</label><input v-model="companyForm.abbr"></div>
+      <div class="field"><label>统一社会信用代码</label><input v-model="companyForm.uscc"></div>
+      <div class="field"><label>海关编码</label><input v-model="companyForm.customs_code"></div>
+      <div class="field"><label>电话</label><input v-model="companyForm.phone"></div>
+      <div class="field"><label>联系人</label><input v-model="companyForm.contact"></div>
+      <div class="field full"><label>银行信息</label><textarea rows="2" v-model="companyForm.bank_info"></textarea></div>
+    </div>
+    <div class="form-section">业务配置</div>
+    <div class="form-grid">
+      <div class="field"><label>保价倍率</label><input type="number" step="0.01" v-model.number="companyForm.insurance_factor"></div>
+      <div class="field check"><label>出口经星盟（二级链路）</label>
+        <label class="switch"><input type="checkbox" v-model="companyForm.export_via_trade"><span>{{companyForm.export_via_trade?'是':'否'}}</span></label>
+      </div>
+      <div class="field"><label>默认起运港</label><input v-model="companyForm.default_port"></div>
+      <div class="field"><label>默认货源地</label><input v-model="companyForm.default_origin_place"></div>
+      <div class="field full"><label>备注</label><textarea rows="2" v-model="companyForm.remark"></textarea></div>
+    </div>
+    <template v-if="tab==='shop'">
+      <div class="form-section">默认文件清单</div>
+      <div class="hint">勾选后，该店铺的批次默认只勾选这些类型的文件；不选 = 全部。</div>
+      <div class="doc-type-grid">
+        <label v-for="dt in companyDocTypes" :key="dt" class="doc-type-check" :class="{on: companyDocSel.includes(dt)}">
+          <input type="checkbox" :value="dt" v-model="companyDocSel">
+          <span>{{dt}}</span>
+        </label>
+      </div>
+    </template>
+    <template #foot>
+      <button class="btn" @click="companyForm=null">取消</button>
+      <button class="btn primary" :class="{loading: saving}" :disabled="saving" @click="saveCompany">{{saving?'保存中…':'保存'}}</button>
+    </template>
+  </modal>
+
+  <!-- 品牌编辑弹窗 -->
+  <modal v-if="brandForm" :title="brandForm.id ? '编辑品牌绑定' : '新增品牌绑定'" size="lg" @close="brandForm=null">
+    <div class="form-grid">
+      <div class="field"><label>品牌名 *</label><input v-model="brandForm.name" placeholder="Serenorch"></div>
+      <div class="field"><label>缩写（编号用，前2位大写）</label><input v-model="brandForm.abbr2" placeholder="SE"></div>
+      <div class="field"><label>默认工厂</label>
+        <select v-model="brandForm.factory_id">
+          <option :value="null">未指定</option>
+          <option v-for="f in store.factories" :key="f.id" :value="f.id">{{f.name}}</option>
+        </select>
+      </div>
+      <div class="field"><label>店铺主体</label>
+        <select v-model="brandForm.company_id">
+          <option :value="null">未指定</option>
+          <option v-for="c in shopCompanies" :key="c.id" :value="c.id">{{c.name_cn}}</option>
+        </select>
+      </div>
+      <div class="field full"><label>货件编号规则</label>
+        <input class="mono" v-model="brandForm.doc_no_rule_shipment" placeholder="{sa}{brand2}-{fc}-{date}">
+        <div class="rule-preview">预览：<b class="mono">{{preview(brandForm.doc_no_rule_shipment)}}</b></div>
+      </div>
+      <div class="field full"><label>采购合同编号规则</label>
+        <input class="mono" v-model="brandForm.doc_no_rule_purchase" placeholder="{sa}{brand2}-{country}-{date}">
+        <div class="rule-preview">预览：<b class="mono">{{preview(brandForm.doc_no_rule_purchase)}}</b></div>
+      </div>
+      <div class="field full"><label>备注</label><textarea rows="2" v-model="brandForm.remark"></textarea></div>
+    </div>
+    <div class="hint">占位符：{sa} 经星盟时="SA-" · {brand2} 品牌前2位 · {fc} 仓代码 · {date} 合同日期 · {country} 国家 · {shipdate} 发货日</div>
+    <template #foot>
+      <button class="btn" @click="brandForm=null">取消</button>
+      <button class="btn primary" :class="{loading: saving}" :disabled="saving" @click="saveBrand">{{saving?'保存中…':'保存'}}</button>
+    </template>
+  </modal>
+</div>
+</template>
+
+<!-- ===================== ⑤ 货代 & 模板 ===================== -->
+<template id="tpl-forwarders">
+<div>
+  <div class="page-head"><h2>货代 & 模板</h2></div>
+
+  <!-- 货代 -->
+  <div class="card">
+    <div class="row-between">
+      <h3>货代</h3>
+      <button class="btn primary" @click="openFwd(null)">＋ 新增货代</button>
+    </div>
+    <table v-if="store.forwarders.length" class="table">
+      <thead><tr><th>名称</th><th>赛狐物流商名</th><th>联系人</th><th>电话</th><th class="op"></th></tr></thead>
+      <tbody>
+        <tr v-for="f in store.forwarders" :key="f.id">
+          <td>{{f.name}}</td><td class="mono">{{f.sellfox_name || '-'}}</td>
+          <td>{{f.contact || '-'}}</td><td>{{f.phone || '-'}}</td>
+          <td class="op">
+            <button class="icon-action" title="编辑" @click="openFwd(f)">✏️</button>
+            <button class="icon-action" title="删除" @click="delFwd(f)">🗑️</button>
+          </td>
+        </tr>
+      </tbody>
+    </table>
+    <div v-else class="empty-state">
+      <div class="empty-ico">🚚</div>
+      <div class="empty-title">还没有货代</div>
+      <div class="empty-sub">「赛狐物流商名」需与赛狐 logisticProviderName 完全一致才能自动匹配（如：跨运通）。</div>
+      <button class="btn primary" @click="openFwd(null)">＋ 新增货代</button>
+    </div>
+  </div>
+
+  <!-- 模板 -->
+  <div class="card">
+    <div class="row-between">
+      <h3>文件模板</h3>
+      <button class="btn primary" @click="openWizard(null)">＋ 新建模板</button>
+    </div>
+
+    <div v-if="store.templates.length" class="tpl-search">
+      <span class="ts-ico">🔍</span>
+      <input v-model="tplQuery" placeholder="搜索模板名称 / 类型 / 货代…">
+      <button v-if="tplQuery" class="ts-clear" title="清空" @click="tplQuery=''">✕</button>
+    </div>
+
+    <template v-if="store.templates.length">
+      <div v-for="grp in tplGroups" :key="grp.key" class="tpl-group">
+        <div class="tpl-group-head">
+          <span class="tg-ico">{{grp.internal ? '🏠' : '🚚'}}</span>
+          <span class="tg-name">{{grp.label}}</span>
+          <span class="tg-count">{{grp.list.length}}</span>
+        </div>
+        <table class="table">
+          <thead><tr><th>名称</th><th>类型</th><th>粒度</th><th>模板文件</th><th>状态</th><th class="op"></th></tr></thead>
+          <tbody>
+            <tr v-for="t in grp.list" :key="t.id" :class="{'row-off': !t.active}">
+              <td>{{t.name}}</td><td>{{t.doc_type}}</td>
+              <td>{{granLabel(t.granularity)}}</td>
+              <td class="muted ellipsis" :title="t.original_name || ''">{{t.original_name || '-'}}</td>
+              <td><span class="badge" :class="t.active ? 'b-green' : 'red'">{{t.active ? '启用' : '停用'}}</span></td>
+              <td class="op">
+                <button class="icon-action" title="预览模板" @click="openPreview(t)">👁</button>
+                <button class="btn sm" @click="toggleTpl(t)">{{t.active ? '停用' : '启用'}}</button>
+                <button class="icon-action" title="编辑" @click="openWizard(t)">✏️</button>
+                <button class="icon-action" title="删除" @click="delTpl(t)">🗑️</button>
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+      <div v-if="!tplGroups.length" class="empty">没有匹配「{{tplQuery}}」的模板</div>
+    </template>
+
+    <div v-else class="empty-state">
+      <div class="empty-ico">📄</div>
+      <div class="empty-title">还没有文件模板</div>
+      <div class="empty-sub">三步向导：上传原版 Excel → AI 生成映射草稿并人工核对 → 用真实批次试生成确认。</div>
+      <button class="btn primary" @click="openWizard(null)">＋ 新建模板</button>
+    </div>
+  </div>
+
+  <!-- 货代弹窗 -->
+  <modal v-if="fwdForm" :title="fwdForm.id ? '编辑货代' : '新增货代'" @close="fwdForm=null">
+    <div class="form-grid">
+      <div class="field"><label>名称 *</label><input v-model="fwdForm.name"></div>
+      <div class="field"><label>赛狐物流商名</label><input v-model="fwdForm.sellfox_name" placeholder="与赛狐 logisticProviderName 一致"></div>
+      <div class="field"><label>联系人</label><input v-model="fwdForm.contact"></div>
+      <div class="field"><label>电话</label><input v-model="fwdForm.phone"></div>
+      <div class="field full"><label>备注</label><textarea rows="2" v-model="fwdForm.remark"></textarea></div>
+    </div>
+    <template #foot>
+      <button class="btn" @click="fwdForm=null">取消</button>
+      <button class="btn primary" :class="{loading: saving}" :disabled="saving" @click="saveFwd">{{saving?'保存中…':'保存'}}</button>
+    </template>
+  </modal>
+
+  <!-- 模板预览弹窗 -->
+  <modal v-if="previewTpl" :title="'模板预览 — ' + previewTpl.name" size="xl" @close="previewTpl=null">
+    <div v-if="gridLoading" class="empty">读取模板中…</div>
+    <div v-else-if="gridError" class="empty">预览失败：{{gridError}}</div>
+    <template v-else-if="gridSheets.length">
+      <div v-if="gridSheets.length>1" class="tabs">
+        <a v-for="(s,i) in gridSheets" :key="s.name" tabindex="0" :class="{active: gridTab===i}"
+           @click="gridTab=i" @keydown.enter="gridTab=i">{{s.name}}</a>
+      </div>
+      <template v-for="(s,i) in gridSheets" :key="s.name">
+        <div v-if="gridTab===i">
+          <div v-if="s.truncated" class="hint">内容较大，仅展示前若干行列</div>
+          <div class="hint" v-if="previewMarks(s)">绿底单元格为已配置映射，悬停查看绑定字段</div>
+          <div class="xl-wrap">
+            <table class="xl-grid">
+              <thead><tr><th></th><th v-for="c in s.cols" :key="c">{{colLetter(c)}}</th></tr></thead>
+              <tbody>
+                <tr v-for="r in s.rows" :key="r">
+                  <th>{{r}}</th>
+                  <td v-for="c in s.cols" :key="c"
+                      :class="{'xl-bound': boundOf(s, r, c)}"
+                      :title="boundOf(s,r,c) ? (colLetter(c)+r+' → '+boundOf(s,r,c)) : String(cellVal(s,r,c))">
+                    <span>{{cellVal(s,r,c)}}</span>
+                    <span v-if="boundOf(s,r,c)" class="xl-tag">{{bindLabel(boundOf(s,r,c))}}</span>
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </template>
+    </template>
+    <div v-else class="empty">模板为空</div>
+  </modal>
+
+  <!-- 模板三步向导 -->
+  <modal v-if="wizOpen" :title="wiz.id ? '编辑模板 — '+wiz.name : '新建模板'" size="xl" @close="closeWizard">
+    <div class="steps">
+      <div v-for="(s,i) in ['基本信息','映射配置','试生成（可选）']" :key="i" tabindex="0"
+           class="step" :class="{active: wizStep===i+1, done: wizStep>i+1}"
+           @click="wizStep=i+1" @keydown.enter="wizStep=i+1">
+        <span class="step-num">{{wizStep>i+1 ? '✓' : i+1}}</span>
+        <span class="step-label">{{s}}</span>
+      </div>
+    </div>
+
+    <!-- 步骤1 基本信息 -->
+    <div v-show="wizStep===1" class="wiz-pane">
+      <div class="form-grid">
+        <div class="field"><label>模板名称 *</label><input v-model="wiz.name" placeholder="跨运通-托书"></div>
+        <div class="field"><label>文件类型</label>
+          <select v-model="wiz.doc_type"><option v-for="d in docTypes" :key="d" :value="d">{{d}}</option></select>
+        </div>
+        <div class="field"><label>归属</label>
+          <select v-model="wiz.owner_type"><option value="forwarder">货代</option><option value="internal">内部</option></select>
+        </div>
+        <div class="field" v-if="wiz.owner_type==='forwarder'"><label>货代</label>
+          <select v-model="wiz.forwarder_id">
+            <option :value="null">未指定</option>
+            <option v-for="f in store.forwarders" :key="f.id" :value="f.id">{{f.name}}</option>
+          </select>
+        </div>
+        <div class="field"><label>生成粒度</label>
+          <select v-model="wiz.granularity">
+            <option value="shipment">每货件一份</option>
+            <option value="batch">每批次一份</option>
+            <option value="row_per_shipment">每货件一行</option>
+          </select>
+        </div>
+      </div>
+
+      <button type="button" class="adv-toggle" @click="advOpen=!advOpen">
+        <span class="caret" :class="{open: advOpen}">❯</span> 高级选项（文件名规则 / 货代单号）
+      </button>
+      <div v-show="advOpen" class="form-grid adv-grid">
+        <div class="field"><label>文件名规则</label><input class="mono" v-model="wiz.filename_rule" placeholder="{brand}-托书-{fc}-{shipdate}"></div>
+        <div class="field check"><label>投保需货代单号</label>
+          <label class="switch"><input type="checkbox" v-model="wiz.requires_forwarder_no"><span>{{wiz.requires_forwarder_no ? '需要（缺单号的货件将锁定/跳过）' : '不需要'}}</span></label>
+        </div>
+      </div>
+
+      <label class="upload-zone" :class="{busy: uploadBusy}">
+        <input type="file" accept=".xlsx,.xls" hidden :disabled="uploadBusy" @change="uploadFile">
+        <span class="up-ico">📤</span>
+        <span class="up-main">{{uploadBusy ? '上传中…' : (wiz.stored_file ? '点击重新上传模板文件' : '点击上传模板 Excel *')}}</span>
+        <span class="up-sub">支持 .xlsx / .xls，将以原版表格为底版逐格填充</span>
+        <span v-if="wiz.original_name" class="chip up-file" :title="wiz.original_name">📄 <span class="fname">{{wiz.original_name}}</span></span>
+        <span v-if="sheetnames.length" class="sheet-chips">
+          工作表：<span v-for="s in sheetnames" :key="s" class="chip mono">{{s}}</span>
+        </span>
+      </label>
+      <label class="switch auto-ai">
+        <input type="checkbox" v-model="autoAiDraft">
+        <span>上传成功后自动跳到映射并生成 AI 草稿</span>
+      </label>
+    </div>
+
+    <!-- 步骤2 映射配置 -->
+    <div v-show="wizStep===2" class="wiz-pane">
+      <div class="map-toolbar">
+        <div class="tabs map-mode-tabs">
+          <a tabindex="0" :class="{active: mapMode==='visual'}" @click="switchMode('visual')" @keydown.enter="switchMode('visual')">🖱 可视化点选</a>
+          <a tabindex="0" :class="{active: mapMode==='source'}" @click="switchMode('source')" @keydown.enter="switchMode('source')">{ } 源码（JSON）</a>
+        </div>
+        <button class="btn sm primary" :class="{loading: aiBusy}" :disabled="aiBusy || !wiz.stored_file" :title="wiz.stored_file ? '' : '请先在步骤1上传模板文件'" @click="aiDraft">
+          {{aiBusy ? 'AI 分析中…' : '🤖 AI生成映射草稿'}}
+        </button>
+      </div>
+
+      <div class="map-layout">
+        <div class="map-left">
+          <!-- 可视化模式：模板网格 -->
+          <template v-if="mapMode==='visual'">
+            <div class="map-tip" :class="{binding: !!selectedAddr}">
+              <template v-if="selectedAddr">
+                已选中 <b class="mono">{{selectedAddr}}</b>，点右侧字段完成绑定，或
+                <button class="link-btn" @click="bindFixed">绑定固定文字</button> /
+                <button class="link-btn" @click="selectedAddr=null">✕ 取消</button>
+              </template>
+              <template v-else>点击模板单元格开始绑定字段；已绑定格再次点击可改绑/解绑。明细区(tables)/锚点(anchors)请切到源码模式配置。</template>
+            </div>
+            <div v-if="gridLoading" class="empty">读取模板网格中…</div>
+            <div v-else-if="gridError" class="empty">网格加载失败：{{gridError}}<button class="link-btn" @click="loadWizGrid">重试</button></div>
+            <template v-else-if="gridSheets.length">
+              <div v-if="gridSheets.length>1" class="tabs">
+                <a v-for="(s,i) in gridSheets" :key="s.name" tabindex="0" :class="{active: gridTab===i}"
+                   @click="gridTab=i" @keydown.enter="gridTab=i">{{s.name}}</a>
+              </div>
+              <div class="xl-wrap map-grid">
+                <table class="xl-grid">
+                  <thead><tr><th></th><th v-for="c in curSheet.cols" :key="c">{{colLetter(c)}}</th></tr></thead>
+                  <tbody>
+                    <tr v-for="r in curSheet.rows" :key="r">
+                      <th>{{r}}</th>
+                      <td v-for="c in curSheet.cols" :key="c"
+                          class="xl-pick"
+                          :class="{'xl-bound': boundOf(curSheet,r,c), 'xl-sel': selectedAddr===colLetter(c)+r}"
+                          :title="cellTitle(curSheet,r,c)"
+                          @click="pickCell(colLetter(c)+r)">
+                        <span class="xl-cellval">{{cellVal(curSheet,r,c)}}</span>
+                        <span v-if="boundOf(curSheet,r,c)" class="xl-tag">{{bindLabel(boundOf(curSheet,r,c))}}</span>
+                      </td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+            </template>
+            <div v-else class="empty">请先在步骤1上传模板文件，再来这里点选映射</div>
+            <div v-if="aiNotes" class="hint">AI 备注：{{aiNotes}}</div>
+          </template>
+
+          <!-- 源码模式：JSON -->
+          <template v-else>
+            <label class="lbl">映射 JSON（cells / anchors / tables，固定文字用 text: 前缀）</label>
+            <textarea class="map-json mono" v-model="mappingText" spellcheck="false" placeholder='{"sheets":[{"name":"模板","cells":{"B5":"shipment.fc_code"}}]}'></textarea>
+            <div v-if="aiNotes" class="hint">AI 备注：{{aiNotes}}</div>
+            <table v-if="confidences.length" class="table sub">
+              <thead><tr><th>目标</th><th>字段</th><th>置信度</th></tr></thead>
+              <tbody>
+                <tr v-for="(c,i) in confidences" :key="i" :class="{'conf-low': c.conf < 0.7}">
+                  <td class="mono">{{c.target}}</td><td class="mono">{{c.path}}</td>
+                  <td>{{(c.conf*100).toFixed(0)}}% <span v-if="c.conf<0.7" class="warn-text">请人工确认</span></td>
+                </tr>
+              </tbody>
+            </table>
+          </template>
+        </div>
+
+        <div class="map-right">
+          <div class="lbl">字段字典（{{selectedAddr ? '点击绑定到 '+selectedAddr : '点击复制路径'}}）</div>
+          <div class="fields-panel" :class="{binding: !!selectedAddr}">
+            <div v-for="g in fieldGroups" :key="g.ns" class="field-group">
+              <button type="button" class="fg-head" @click="toggleFieldNs(g.ns)">
+                <span class="caret" :class="{open: !fieldsCollapsed[g.ns]}">❯</span>
+                <span class="fg-ns mono">{{g.ns}}.*</span>
+                <span class="fg-count">{{g.items.length}}</span>
+              </button>
+              <div v-show="!fieldsCollapsed[g.ns]" class="fg-body">
+                <div v-for="f in g.items" :key="f.path" class="field-row"
+                     :title="(selectedAddr ? '绑定到 '+selectedAddr+'：' : '点击复制 ')+f.path" @click="onFieldClick(f.path)">
+                  <span class="fr-path mono">{{f.path}}</span>
+                  <span class="fr-label">{{f.label}}</span>
+                  <span class="copy-ico">{{selectedAddr ? '🔗' : '📋'}}</span>
+                </div>
+              </div>
+            </div>
+            <div v-if="!fieldGroups.length" class="empty">字段字典加载中或为空</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 步骤3 试生成 -->
+    <div v-show="wizStep===3" class="wiz-pane">
+      <div class="form-grid">
+        <div class="field"><label>选择批次（用真实数据试生成）</label>
+          <select v-model="testBatchId">
+            <option :value="null">请选择批次…</option>
+            <option v-for="b in store.batches" :key="b.id" :value="b.id">{{b.name || b.inbound_plan_id}}</option>
+          </select>
+        </div>
+        <div class="field check"><label>&nbsp;</label>
+          <button class="btn primary" :class="{loading: testBusy}" :disabled="testBusy || !testBatchId" @click="testGen">
+            {{testBusy ? '生成中…' : '⚙ 试生成并下载'}}
+          </button>
+        </div>
+      </div>
+      <div class="hint">此步为可选。试生成不会落生成记录；如想核对效果，选批次试生成后打开下载文件逐格检查，再「保存并启用」。也可直接保存。</div>
+    </div>
+
+    <template #foot>
+      <button class="btn" v-if="wizStep>1" @click="wizStep--">上一步</button>
+      <button class="btn" v-if="wizStep<3" @click="wizStep++">下一步</button>
+      <span class="flex-1"></span>
+      <button class="btn" :disabled="saving" @click="saveWizard(false)">{{saving?'保存中…':'保存（不启用）'}}</button>
+      <button class="btn primary" :class="{loading: saving}" :disabled="saving" @click="saveWizard(true)">{{saving?'保存中…':'保存并启用'}}</button>
+    </template>
+  </modal>
+</div>
+</template>
+
+<!-- ===================== ⑥ 规则配置 ===================== -->
+<template id="tpl-rules">
+<div>
+  <div class="page-head"><h2>规则配置</h2></div>
+  <div v-if="loading" class="card empty">加载中…</div>
+  <div v-else-if="!list.length" class="card empty">还没有规则配置。后端初始化（POST /api/seed/init）后会写入默认规则。</div>
+  <div v-else>
+    <div v-for="g in groups" :key="g.label" class="card">
+      <h3>{{g.label}}</h3>
+      <div class="card-desc">{{groupDesc(g.label)}}</div>
+      <div class="rule-head"><span>规则</span><span>当前值</span><span>默认值</span><span></span></div>
+      <div v-for="r in g.list" :key="r.id" class="rule-row">
+        <div class="rule-label">{{r.label || r.key}}<span class="rule-key mono">{{r.key}}</span></div>
+        <input v-model="r.value" @change="saveVal(r)">
+        <div class="rule-default" :title="r.default_value">{{r.default_value}}</div>
+        <button class="link-btn" :disabled="r.value===r.default_value" @click="restore(r)">恢复默认</button>
+      </div>
+    </div>
+  </div>
+</div>
+</template>
+
+<!-- ===================== ⑦ 生成记录 ===================== -->
+<template id="tpl-docs">
+<div>
+  <div class="page-head">
+    <h2>生成记录</h2>
+    <div class="head-ops">
+      <select v-model="batchId" @change="load">
+        <option :value="null">选择批次…</option>
+        <option v-for="b in store.batches" :key="b.id" :value="b.id">{{b.name || b.inbound_plan_id}}</option>
+      </select>
+      <select v-model="typeFilter">
+        <option value="">全部类型</option>
+        <option v-for="t in docTypes" :key="t" :value="t">{{t}}</option>
+      </select>
+      <a v-if="batchId && docs.length" class="btn" :href="'/api/batches/'+batchId+'/zip'">📦 打包下载</a>
+    </div>
+  </div>
+  <div class="card">
+    <div v-if="!batchId" class="empty-state">
+      <div class="empty-ico">🗂️</div>
+      <div class="empty-title">请选择批次</div>
+      <div class="empty-sub">在右上角选择一个批次，查看其全部生成文件流水，支持按类型筛选。</div>
+    </div>
+    <div v-else-if="loading" class="empty">加载中…</div>
+    <table v-else-if="filtered.length" class="table">
+      <thead><tr><th>文件名</th><th>类型</th><th>货件</th><th>生成时间</th><th class="op"></th></tr></thead>
+      <tbody>
+        <tr v-for="d in filtered" :key="d.id || d.doc_id">
+          <td class="ellipsis" :title="d.filename">{{d.filename}}</td>
+          <td>{{d.doc_type || '-'}}</td>
+          <td>{{shipLabel(d.shipment_id)}}</td>
+          <td class="muted">{{fmtTime(d.created_at)}}</td>
+          <td class="op">
+            <button class="icon-action" title="预览文件内容" @click="previewDoc=d">👁</button>
+            <a class="icon-action" title="下载" :href="'/api/docs/'+(d.id ?? d.doc_id)+'/download'">⬇️</a>
+            <button class="icon-action" title="删除" @click="del(d)">🗑️</button>
+          </td>
+        </tr>
+      </tbody>
+    </table>
+    <div v-else class="empty-state">
+      <div class="empty-ico">📄</div>
+      <div class="empty-title">{{typeFilter ? '没有「'+typeFilter+'」类型的文件' : '该批次还没有生成文件'}}</div>
+      <div class="empty-sub">到批次详情页校验通过后勾选模板，点「⚡ 一键生成」即可在此查看流水。</div>
+    </div>
+  </div>
+  <doc-preview v-if="previewDoc" :doc-id="previewDoc.id ?? previewDoc.doc_id" :filename="previewDoc.filename"
+               @close="previewDoc=null"></doc-preview>
+</div>
+</template>
+
+<script src="/app.js"></script>
+</body>
+</html>

@@ -1,0 +1,23 @@
+# 凭据 — 绝不提交
+.env
+.env.*
+!.env.example
+
+# Python 缓存 / 产物
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# 运行产物 / 上传数据 / 缓存（业务数据，不进代码库）
+output/
+templates_store/
+shop_cache.json
+*.log
+
+# 编辑器 / 系统
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
