@@ -735,7 +735,8 @@ const PageBatchDetail = {
     /* SOP 进度：点步骤 → 在进度条下方展开该步面板（做事/勾选） */
     openSopStep(step) {
       this.sopActive = (this.sopActive === step.key) ? '' : step.key;
-      if (this.sopActive === 'prep' && !this.prepData) this.loadPrep();
+      // 数据准备(补仓清单) 和 建仓(建仓清单) 都用聚合数据
+      if ((this.sopActive === 'prep' || this.sopActive === 'build') && !this.prepData) this.loadPrep();
     },
     async loadPrep() {
       this.prepLoading = true; this.prepData = null;

@@ -526,30 +526,13 @@
                 <button class="btn xs" @click="loadPrep">重新聚合</button>
               </div>
             </div>
-            <div class="prep-cols">
-              <div class="prep-col">
-                <h4 class="wiz-sec">补仓清单<span class="muted"> · 按 SKU 汇总数量</span></h4>
-                <div class="table-wrap"><table class="table sub">
-                  <thead><tr><th>SKU</th><th>品名</th><th class="num">总数量</th></tr></thead>
-                  <tbody>
-                    <tr v-for="(r,ri) in prepData.replenish" :key="ri"><td class="mono">{{r.msku}}</td><td class="ellipsis" :title="r.product_name">{{r.product_name||'-'}}</td><td class="num">{{num(r.qty)}}</td></tr>
-                  </tbody>
-                </table></div>
-              </div>
-              <div class="prep-col">
-                <h4 class="wiz-sec">建仓清单<span class="muted"> · SKU + 箱规(in/lb)</span></h4>
-                <div class="table-wrap"><table class="table sub">
-                  <thead><tr><th>SKU</th><th class="num">数量</th><th class="num">每箱</th><th class="num">长</th><th class="num">宽</th><th class="num">高</th><th class="num">重</th></tr></thead>
-                  <tbody>
-                    <tr v-for="(r,ri) in prepData.build" :key="ri" :class="{'row-warn': r.missing.length}">
-                      <td class="mono">{{r.msku}}</td><td class="num">{{num(r.qty)}}</td>
-                      <td class="num">{{r.units_per_box ?? '—'}}</td><td class="num">{{r.l_in ?? '—'}}</td>
-                      <td class="num">{{r.w_in ?? '—'}}</td><td class="num">{{r.h_in ?? '—'}}</td><td class="num">{{r.weight_lb ?? '—'}}</td>
-                    </tr>
-                  </tbody>
-                </table></div>
-              </div>
-            </div>
+            <h4 class="wiz-sec">补仓清单<span class="muted"> · 按 SKU 汇总数量</span></h4>
+            <div class="table-wrap"><table class="table sub">
+              <thead><tr><th>SKU</th><th>品名</th><th class="num">总数量</th></tr></thead>
+              <tbody>
+                <tr v-for="(r,ri) in prepData.replenish" :key="ri"><td class="mono">{{r.msku}}</td><td class="ellipsis" :title="r.product_name">{{r.product_name||'-'}}</td><td class="num">{{num(r.qty)}}</td></tr>
+              </tbody>
+            </table></div>
           </template>
         </template>
 
@@ -562,6 +545,19 @@
             <div class="banner-title" v-else>尚未建仓。到「批次管理」页用 🏗️ 建仓向导完成（数据从产品库自动补箱规）。</div>
           </div>
           <a class="btn" href="#batches">→ 去建仓向导</a>
+          <template v-if="prepData">
+            <h4 class="wiz-sec">建仓清单<span class="muted"> · SKU + 箱规(in/lb)，缺箱规标黄</span></h4>
+            <div class="table-wrap"><table class="table sub">
+              <thead><tr><th>SKU</th><th class="num">数量</th><th class="num">每箱</th><th class="num">长</th><th class="num">宽</th><th class="num">高</th><th class="num">重</th></tr></thead>
+              <tbody>
+                <tr v-for="(r,ri) in prepData.build" :key="ri" :class="{'row-warn': r.missing.length}">
+                  <td class="mono">{{r.msku}}</td><td class="num">{{num(r.qty)}}</td>
+                  <td class="num">{{r.units_per_box ?? '—'}}</td><td class="num">{{r.l_in ?? '—'}}</td>
+                  <td class="num">{{r.w_in ?? '—'}}</td><td class="num">{{r.h_in ?? '—'}}</td><td class="num">{{r.weight_lb ?? '—'}}</td>
+                </tr>
+              </tbody>
+            </table></div>
+          </template>
         </template>
 
         <!-- 采购 -->
