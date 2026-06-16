@@ -22,7 +22,7 @@
 from datetime import datetime, timedelta
 
 from .. import sellfox_client as sf
-from ..models import Batch, ShipmentItem
+from ..models import Batch, Brand, Product, Shipment, ShipmentItem
 from . import sync_service as ss
 from .sync_service import _f, _i, _s, MARKETPLACE_MAP
 
@@ -525,3 +525,65 @@ def import_plan(db, plan_group_no, inbound_plan_id):
     result["purchase_plan_no"] = plan_group_no
     result["purchase_cost_filled"] = updated
     return result
+
+
+_COUNTRY = {"美国": "US", "英国": "UK", "加拿大": "CA", "德国": "DE", "日本": "JP"}
+
+
+def import_plan_only(db, plan_group_no):
+    """不配对 STA，直接从采购计划建批次。
+
+    用于"还没建仓、STA 不存在"的情形：把采购计划明细(SKU/数量/采购成本/箱规)
+    落到一个 fc_code 为空的"未分仓"货件；目的仓 FC/分仓 等后续建仓产出再补。
+    已存在(按 purchase_plan_no)则只更新批次基本信息，不动已有货件(避免覆盖建仓产出)。
+    """
+    grp = _find_group(db, plan_group_no)
+    if grp is None:
+        return None
+    items = grp.get("purchasePlanItemVoList") or []
+    if not items:
+        raise RuntimeError("采购计划无明细")
+
+    brand_name = next((_s(it.get("brandName")) for it in items if it.get("brandName")), "")
+    shop_name = next((_s(it.get("shopName")) for it in items if it.get("shopName")), "")
+    site = next((_s(it.get("siteName")) for it in items if it.get("siteName")), "")
+    country = _COUNTRY.get(site, site or "US")
+    brand = db.query(Brand).filter(Brand.name == brand_name).first() if brand_name else None
+
+    batch = db.query(Batch).filter(Batch.purchase_plan_no == plan_group_no).first()
+    created = batch is None
+    if batch is None:
+        batch = Batch(purchase_plan_no=plan_group_no)
+        db.add(batch)
+    batch.name = f"{shop_name or brand_name or plan_group_no}-{country}"
+    if brand:
+        batch.brand_id = brand.id
+        batch.company_id = brand.company_id
+        batch.factory_id = brand.factory_id
+    batch.shop_name = shop_name
+    batch.marketplace = country
+    batch.country = country
+    if created:
+        batch.status = "数据准备"
+    batch.synced_at = datetime.now()
+    db.flush()
+
+    if created:
+        sp = Shipment(batch_id=batch.id, fc_code="", status="待建仓")
+        db.add(sp)
+        db.flush()
+        for it in items:
+            msku = _s(it.get("msku") or it.get("sku"))
+            if not msku:
+                continue
+            p = db.query(Product).filter(Product.sku == msku).first()
+            db.add(ShipmentItem(
+                shipment_id=sp.id, product_id=(p.id if p else None), msku=msku,
+                qty=_i(it.get("planNum")) or 0,
+                qty_per_box=_i(it.get("cartonQty")),
+                box_count=_i(it.get("cartonNum")),
+                purchase_cost=_f(it.get("purchaseCost")),
+            ))
+    db.commit()
+    return {"batch_id": batch.id, "created": created,
+            "purchase_plan_no": plan_group_no, "shipment_count": len(batch.shipments)}

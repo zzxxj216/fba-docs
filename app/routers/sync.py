@@ -109,3 +109,19 @@ def purchase_plan_import(data: dict, db: Session = Depends(get_db)):
     if res is None:
         raise HTTPException(404, f"采购计划 {pgn} 未找到（近 60 天已审批）")
     return res
+
+
+@router.post("/sync/purchase-plans/import-only")
+def purchase_plan_import_only(data: dict, db: Session = Depends(get_db)):
+    """不配对 STA，直接从采购计划建批次（未建仓时用；FC 等建仓产出）。"""
+    pgn = (data or {}).get("plan_group_no", "")
+    if not pgn:
+        raise HTTPException(400, "缺少 plan_group_no")
+    try:
+        res = purchase_plan_service.import_plan_only(db, pgn)
+    except RuntimeError as e:
+        db.rollback()
+        raise HTTPException(502, str(e))
+    if res is None:
+        raise HTTPException(404, f"采购计划 {pgn} 未找到（近 60 天已审批）")
+    return res

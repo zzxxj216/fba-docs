@@ -260,6 +260,21 @@ const PageBatches = {
       } catch (e) { toast('导入失败：' + e.message, 'err'); }
       this.importing = false;
     },
+    /* 不配对 STA，直接从采购计划建批次（未建仓时用） */
+    async doImportOnly() {
+      if (!this.pickedPlan || this.importing) return;
+      this.importing = true;
+      try {
+        const r = await api('/sync/purchase-plans/import-only', {
+          method: 'POST', body: { plan_group_no: this.pickedPlan.plan_group_no },
+        });
+        toast('已导入批次（未配对发货，建仓时再补 FC）');
+        try { this.batches = (await api('/batches')) || []; this.batches.sort((a, b) => (b.id || 0) - (a.id || 0)); } catch (e) {}
+        this.syncOpen = false;
+        if (r && r.batch_id) location.hash = '#batches/' + r.batch_id;
+      } catch (e) { toast('导入失败：' + e.message, 'err'); }
+      this.importing = false;
+    },
 
     /* ---- 离线 Excel 导入 ---- */
     openExcel() { this.excelOpen = true; },

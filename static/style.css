@@ -977,3 +977,5 @@ input[type="checkbox"] { accent-color: var(--primary); }
 .prep-cols{display:flex;gap:16px;flex-wrap:wrap}
 .prep-col{flex:1;min-width:300px}
 .table tr.row-warn td{background:#FFF7ED}
+
+.empty-acts{display:flex;gap:8px;justify-content:center;margin-top:8px}

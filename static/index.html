@@ -220,8 +220,11 @@
       <div v-else class="empty-state sm">
         <div class="empty-ico">🔍</div>
         <div class="empty-title">未找到匹配的入库计划</div>
-        <div class="empty-sub">请确认该采购计划已在赛狐建仓发货。</div>
-        <button class="btn sm" @click="gotoStep(1)">← 返回选采购计划</button>
+        <div class="empty-sub">还没在赛狐建仓发货很正常 —— 可以「直接导入」先把批次建好，建仓时再补 FC。</div>
+        <div class="empty-acts">
+          <button class="btn sm" @click="gotoStep(1)">← 返回选采购计划</button>
+          <button class="btn sm primary" :class="{loading: importing}" :disabled="importing" @click="doImportOnly">直接导入（暂不配对）</button>
+        </div>
       </div>
     </div>
 
@@ -296,7 +299,11 @@
     <template #foot>
       <button v-if="syncStep>1" class="btn sm" :disabled="importing" @click="gotoStep(syncStep-1)">← 上一步</button>
       <span class="flex-1"></span>
-      <button v-if="syncStep===1" class="btn sm primary" :disabled="!pickedPlan || candLoading" @click="toStep2">
+      <button v-if="syncStep===1" class="btn sm" :class="{loading: importing}" :disabled="!pickedPlan || importing" @click="doImportOnly"
+              title="还没建仓、赛狐还没有 STA 发货数据时用：先把采购计划建成批次，FC 等建仓再补">
+        直接导入（暂不配对）
+      </button>
+      <button v-if="syncStep===1" class="btn sm primary" :disabled="!pickedPlan || candLoading || importing" @click="toStep2">
         下一步：配对发货数据
       </button>
       <button v-else-if="syncStep===2" class="btn sm primary" :disabled="!pickedCand || previewLoading" @click="toStep3">
