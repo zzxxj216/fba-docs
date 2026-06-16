@@ -13,7 +13,7 @@ from sqlalchemy.orm import Session
 
 from ..database import OUTPUT_DIR, get_db
 from ..models import Batch, Forwarder, GeneratedDoc, Shipment, ShipmentItem, Template
-from ..services import validate_service, batch_prep_service
+from ..services import validate_service, batch_prep_service, inbound_service
 from .. import sop_flow
 
 router = APIRouter()
@@ -140,6 +140,19 @@ def batch_fill_products(batch_id: int, db: Session = Depends(get_db)):
     res = batch_prep_service.fill_missing_products(db, b)
     res["prep"] = batch_prep_service.aggregate(db, b)
     return res
+
+
+@router.post("/batches/{batch_id}/build")
+def build_batch(batch_id: int, db: Session = Depends(get_db)):
+    """直接给批次建仓（不走向导）：用批次明细跑亚马逊建仓，分仓方案落到 batch.placement_options。"""
+    b = db.get(Batch, batch_id)
+    if b is None:
+        raise HTTPException(404, f"批次 {batch_id} 不存在")
+    try:
+        return inbound_service.build_for_batch(db, b)
+    except RuntimeError as e:
+        db.rollback()
+        raise HTTPException(502, str(e))
 
 
 @router.post("/batches/{batch_id}/sop")

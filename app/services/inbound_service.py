@@ -411,3 +411,90 @@ def operation_status(rec_id, operation_id, store=None):
     op = fba.call("GET", f"/operations/{operation_id}", store=store or None) or {}
     return {"operation_id": operation_id, "status": op.get("operationStatus"),
             "problems": op.get("operationProblems")}
+
+
+def build_for_batch(db, batch):
+    """直接给批次建仓（不走向导）：用批次明细跑 create→packing→boxes→placement，
+    把分仓方案(含合仓)算好箱数/重量存到 batch.placement_options，并回填 inbound_plan_id。
+
+    箱规/数量取批次明细的产品箱规；store 按品牌 amazon_store（空=默认 main）。
+    """
+    from ..models import Batch  # 避免顶层循环引用
+    raw = [{"msku": it.msku, "quantity": it.qty}
+           for sp in batch.shipments for it in sp.items if (it.qty or 0) > 0]
+    if not raw:
+        raise RuntimeError("批次无明细，无法建仓")
+    items = _resolve_items(db, raw)              # 校验+补箱规（缺箱规会在这里报错）
+    store = _store(db, batch.brand_id) or None
+    spec = {it["msku"]: it for it in items}
+
+    api_items = [{"msku": it["msku"], "quantity": it["quantity"],
+                  "prep_owner": "SELLER", "label_owner": "SELLER"} for it in items]
+    resp = fba.call("POST", "/inbound-plans", store=store, timeout=90,
+                    json={"name": batch.name, "source_address": SOURCE_ADDRESS, "items": api_items})
+    pid = resp.get("inboundPlanId", "")
+    if resp.get("operationId"):
+        fba.wait_operation(resp["operationId"], store=store, timeout=120)
+    batch.inbound_plan_id = pid
+    db.commit()
+
+    g = fba.call("POST", f"/inbound-plans/{pid}/packing-options/generate", store=store)
+    fba.wait_operation(g["operationId"], store=store)
+    po = ((fba.call("GET", f"/inbound-plans/{pid}/packing-options", store=store) or {}).get("packingOptions") or [None])[0]
+    if not po:
+        raise RuntimeError("没有可用装箱方案")
+    c = fba.call("POST", f"/inbound-plans/{pid}/packing-options/{po['packingOptionId']}/confirm", store=store)
+    fba.wait_operation(c["operationId"], store=store)
+
+    boxes = []
+    for it in items:
+        upb = it["units_per_box"]
+        full, rem = divmod(it["quantity"], upb)
+        dims = {"unitOfMeasurement": "IN", "length": it["l_in"], "width": it["w_in"], "height": it["h_in"]}
+        wt = {"unit": "LB", "value": it["weight_lb"]}
+        line = {"msku": it["msku"], "prepOwner": "SELLER", "labelOwner": "SELLER"}
+        if full > 0:
+            boxes.append({"contentInformationSource": "BOX_CONTENT_PROVIDED",
+                          "items": [dict(line, quantity=upb)], "dimensions": dims, "weight": wt, "quantity": full})
+        if rem > 0:
+            boxes.append({"contentInformationSource": "BOX_CONTENT_PROVIDED",
+                          "items": [dict(line, quantity=rem)], "dimensions": dims, "weight": wt, "quantity": 1})
+    r = fba.call("POST", f"/inbound-plans/{pid}/packing-information", store=store,
+                 json={"package_groupings": [{"packingGroupId": (po.get("packingGroups") or [None])[0], "boxes": boxes}]})
+    fba.wait_operation(r["operationId"], store=store)
+
+    g2 = fba.call("POST", f"/inbound-plans/{pid}/placement-options/generate", store=store)
+    fba.wait_operation(g2["operationId"], store=store, timeout=300)
+    pls = fba.call("GET", f"/inbound-plans/{pid}/placement-options", store=store) or {}
+
+    out = []
+    for o in pls.get("placementOptions") or []:
+        fees = 0.0
+        for f in o.get("fees") or []:
+            try:
+                fees += float(f.get("value", {}).get("amount") or 0)
+            except (TypeError, ValueError):
+                pass
+        ships = []
+        for sid in o.get("shipmentIds") or []:
+            sh = fba.call("GET", f"/inbound-plans/{pid}/shipments/{sid}", store=store) or {}
+            dest = sh.get("destination", {}) or {}
+            addr = dest.get("address", {}) or {}
+            si = fba.call("GET", f"/inbound-plans/{pid}/shipments/{sid}/items", store=store) or {}
+            by, units, bx, wkg = {}, 0, 0, 0.0
+            for x in si.get("items") or []:
+                m = x.get("msku"); q = int(x.get("quantity") or 0)
+                by[m] = by.get(m, 0) + q; units += q
+                sp_it = spec.get(m)
+                if sp_it and sp_it["units_per_box"]:
+                    nb = math.ceil(q / sp_it["units_per_box"])
+                    bx += nb; wkg += nb * (sp_it["weight_lb"] / LB_PER_KG)
+            ships.append({"fc": dest.get("warehouseId"), "city": addr.get("city"),
+                          "state": addr.get("stateOrProvinceCode"), "units": units,
+                          "boxes": bx, "weight_kg": round(wkg, 1), "by_sku": by})
+        out.append({"placement_option_id": o.get("placementOptionId"),
+                    "label": f"{len(o.get('shipmentIds') or [])} 仓",
+                    "fee_usd": round(fees, 2), "shipments": ships})
+    batch.placement_options = json.dumps(out, ensure_ascii=False)
+    db.commit()
+    return {"inbound_plan_id": pid, "option_count": len(out)}

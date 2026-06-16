@@ -667,6 +667,7 @@ const PageBatchDetail = {
       fieldMap: null,
       histOpen: {}, previewDoc: null,
       sopActive: '', prepData: null, prepLoading: false,
+      buildBusy: false, buildProgress: '',
       _vt: null,
     };
   },
@@ -763,6 +764,18 @@ const PageBatchDetail = {
     },
     sumK(opt, key) {
       return (opt.shipments || []).reduce((a, s) => a + (Number(s[key]) || 0), 0).toFixed(key === 'weight_kg' ? 1 : 0);
+    },
+    /* 批次直接建仓（不走向导）：跑亚马逊建仓→分仓方案落到本批次 */
+    async doBuildBatch() {
+      if (!confirm('将用本批次明细在亚马逊建仓（创建入库计划→装箱→箱规→分仓）。\n这是赛狐外的亚马逊写操作、分仓较慢（最长几分钟），确认开始？')) return;
+      this.buildBusy = true;
+      this.buildProgress = '建仓中：创建计划 → 装箱 → 箱规 → 分仓（亚马逊计算，请耐心等待，勿离开本页）…';
+      try {
+        await api('/batches/' + this.arg + '/build', { method: 'POST' });
+        toast('建仓完成，分仓方案已生成');
+        await this.reload();
+      } catch (e) { toast('建仓失败：' + e.message, 'err'); }
+      this.buildProgress = ''; this.buildBusy = false;
     },
     /* 手动步骤：勾选/取消完成 */
     async toggleSop(step) {

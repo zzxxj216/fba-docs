@@ -564,7 +564,13 @@
             </div>
             <div class="banner-title" v-else>尚未建仓。到「批次管理」页用 🏗️ 建仓向导完成（数据从产品库自动补箱规）。</div>
           </div>
-          <a v-if="!(batch.placement_options||[]).length" class="btn" href="#batches">→ 去建仓向导</a>
+          <div v-if="buildProgress" class="banner">
+            <div class="banner-title">⏳ {{buildProgress}}</div>
+            <div class="banner-line"><span class="dot"></span><span class="banner-msg">建仓为亚马逊异步流程，请勿离开本页。</span></div>
+          </div>
+          <button v-if="!(batch.placement_options||[]).length" class="btn primary" :class="{loading: buildBusy}" :disabled="buildBusy" @click="doBuildBatch">
+            🏗️ 开始建仓（用本批次明细，不走向导）
+          </button>
 
           <!-- 分仓方案（亚马逊已生成，分仓/合仓对比，未确认）-->
           <template v-if="(batch.placement_options||[]).length">
