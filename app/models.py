@@ -71,6 +71,7 @@ class Brand(Base):
     sellfox_supplier_id = Column(String(32), default="")   # 赛狐供应商id（生成采购单用，链条系21797/嘉欣539122）
     sellfox_warehouse_id = Column(String(32), default="")  # 赛狐仓库id（采购单，空则用采购计划默认仓库）
     default_site = Column(String(16), default="美国")       # 默认站点（未建仓采购计划补站点用）
+    amazon_store = Column(String(32), default="")           # mcapi AMAZON_STORES_JSON 的 store key（空=默认店 main）
     remark = Column(Text)
     active = Column(Boolean, default=True)
 
@@ -270,6 +271,37 @@ class ShipmentBox(Base):
     weight_lb = Column(Float)
 
     shipment = relationship("Shipment", back_populates="boxes")
+
+
+class InboundPlan(Base):
+    """建仓（亚马逊 FBA STA 入库计划）本地过程记录。
+
+    区别于 Batch（=建成的批次/赛狐STA）：本表记录"系统主动建 STA"的多步异步过程
+    与中间状态；建仓完成后回填/关联到 Batch + Shipment。
+    输入来自补仓计划（SKU/数量/每箱数/外箱数/箱规），不是采购计划（采购在建仓之后）。
+    """
+    __tablename__ = "inbound_plans"
+    id = Column(Integer, primary_key=True)
+    source_type = Column(String(16), default="manual")    # manual / replenish(补仓计划) / purchase_plan
+    source_ref = Column(String(64), default="")           # 来源标识（补仓计划名/采购计划组号）
+    brand_id = Column(Integer, ForeignKey("brands.id"))
+    store = Column(String(32), default="")                # 实际用的 mcapi store key
+    name = Column(String(128), default="")                # 如 HUHOLE-US-2026.5.29-建仓
+    status = Column(String(24), default="待建仓")           # 待建仓/计划已创建/装箱已确认/已提交箱规/
+                                                          # 分仓方案已生成/分仓已确认/运输已配置/建仓完成/失败
+    amazon_inbound_plan_id = Column(String(64), default="", index=True)
+    items_snapshot = Column(Text)        # JSON [{msku,quantity,units_per_box,boxes,l_in,w_in,h_in,weight_lb}]
+    source_address = Column(Text)        # JSON 发货地址快照
+    packing_option_id = Column(String(128), default="")
+    placement_option_id = Column(String(128), default="")
+    current_operation_id = Column(String(128), default="")  # 进行中的异步操作（前端轮询用）
+    shipments_snapshot = Column(Text)    # JSON 分仓后货件 [{shipmentId,fcCode,address,boxes,...}]
+    batch_id = Column(Integer, ForeignKey("batches.id"))    # 完成后关联的批次
+    error = Column(Text)
+    created_at = Column(DateTime, default=datetime.now)
+    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+
+    brand = relationship("Brand")
 
 
 class GeneratedDoc(Base):

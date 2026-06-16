@@ -4,7 +4,7 @@ from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 
 from .database import BASE_DIR, Base, engine
-from .routers import batches, crud, generate, purchase, sync, templates
+from .routers import batches, crud, generate, inbound, purchase, sync, templates
 
 Base.metadata.create_all(bind=engine)
 
@@ -30,6 +30,7 @@ app.include_router(batches.router, prefix="/api")
 app.include_router(templates.router, prefix="/api")
 app.include_router(generate.router, prefix="/api")
 app.include_router(purchase.router, prefix="/api")
+app.include_router(inbound.router, prefix="/api")
 app.include_router(crud.router, prefix="/api")
 
 app.mount("/", StaticFiles(directory=os.path.join(BASE_DIR, "static"), html=True), name="static")
