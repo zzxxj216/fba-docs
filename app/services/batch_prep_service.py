@@ -46,9 +46,13 @@ def aggregate(db, batch):
         wt = round(p.box_weight_kg * LB_PER_KG, 2) if p and p.box_weight_kg else None
         unit_price = a["unit_price"] or (p.unit_price_default if p else None)
         hs = (p.hs_code if p else "") or ""
-        has_elements = bool(p and (p.declare_elements or "").strip())
         auto = bool(p and "自动建档" in (p.remark or ""))
         box_miss = [k for k, v in (("每箱数", upb), ("长", l), ("宽", w), ("高", h), ("重", wt)) if not v]
+        # 报关单的申报要素由 用途/材质/品牌(/型号) 现拼（见 field_registry._declare_full），
+        # 故检查这三项而非赛狐常空着的原始 declareElements 字段，避免误报。
+        decl_miss = [k for k, v in (("用途", p.usage if p else ""),
+                                    ("材质", p.material if p else ""),
+                                    ("品牌", p.brand_name if p else "")) if not (v or "").strip()]
 
         problems = []
         if not p:
@@ -61,8 +65,8 @@ def aggregate(db, batch):
             problems.append("缺申报单价")
         if not hs:
             problems.append("缺HS编码")
-        if p and not has_elements:
-            problems.append("缺申报要素")
+        if p and decl_miss:
+            problems.append("缺申报要素(" + "、".join(decl_miss) + ")")
         if auto:
             problems.append("自动建档待核对")
 
@@ -73,7 +77,7 @@ def aggregate(db, batch):
             "msku": msku, "product_name": name, "qty": a["qty"], "boxes": a["boxes"],
             "units_per_box": upb, "l_in": l, "w_in": w, "h_in": h, "weight_lb": wt,
             "customs_unit_price": unit_price, "hs_code": hs,
-            "has_elements": has_elements, "auto_created": auto,
+            "has_declare": not decl_miss, "auto_created": auto,
             "in_lib": bool(p), "problems": problems, "ok": not hard,
         })
         replenish.append({"msku": msku, "qty": a["qty"], "product_name": name})
