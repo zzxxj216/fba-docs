@@ -968,3 +968,12 @@ input[type="checkbox"] { accent-color: var(--primary); }
 .sop-tag.manual{background:#FFF4E5;color:#B45309}
 .sop-arrow{color:#C9D2DE;font-size:16px;margin:0 1px}
 .sop-arrow.done{color:#28c76f}
+
+/* SOP 步骤展开面板 */
+.sop-step.active{border-color:var(--primary);background:var(--primary-light)}
+.sop-panel{margin-top:12px;padding-top:12px;border-top:1px dashed var(--border-soft)}
+.sop-panel-head{display:flex;align-items:center;gap:8px;margin-bottom:8px;font-size:13px}
+.sop-manual{display:flex;align-items:center;gap:10px;padding:6px 0}
+.prep-cols{display:flex;gap:16px;flex-wrap:wrap}
+.prep-col{flex:1;min-width:300px}
+.table tr.row-warn td{background:#FFF7ED}

@@ -13,7 +13,7 @@ from sqlalchemy.orm import Session
 
 from ..database import OUTPUT_DIR, get_db
 from ..models import Batch, Forwarder, GeneratedDoc, Shipment, ShipmentItem, Template
-from ..services import validate_service
+from ..services import validate_service, batch_prep_service
 from .. import sop_flow
 
 router = APIRouter()
@@ -116,6 +116,15 @@ def batch_full(batch_id: int, db: Session = Depends(get_db)):
     result["suggested_template_ids"] = suggested
     result["sop"] = sop_flow.compute(db, b)
     return result
+
+
+@router.get("/batches/{batch_id}/prep")
+def batch_prep(batch_id: int, db: Session = Depends(get_db)):
+    """SOP 第一步「数据准备」：补仓清单 + 建仓清单 + 校验。"""
+    b = db.get(Batch, batch_id)
+    if b is None:
+        raise HTTPException(404, f"批次 {batch_id} 不存在")
+    return batch_prep_service.aggregate(db, b)
 
 
 @router.post("/batches/{batch_id}/sop")

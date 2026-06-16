@@ -10,8 +10,10 @@
 import json
 
 from .models import GeneratedDoc, PurchasePlanConfirm
+from .services import batch_prep_service
 
 STEPS = [
+    {"key": "prep", "label": "数据准备", "desc": "聚合补仓/建仓清单 + 校验数据齐全", "type": "auto", "action": "prep"},
     {"key": "build", "label": "建仓", "desc": "亚马逊 STA 分仓 · 得目的仓 FC", "type": "auto", "action": "build"},
     {"key": "generate", "label": "生成文件", "desc": "托书/报关/投保/采购合同/9810", "type": "auto", "action": "generate"},
     {"key": "labels", "label": "整理标签", "desc": "外箱标(裁剪) + 货代标", "type": "manual"},
@@ -26,6 +28,7 @@ STEPS = [
 
 def _auto_status(db, batch):
     """auto 类步骤的完成判定。"""
+    prep_ready = batch_prep_service.aggregate(db, batch)["ready"]
     has_fc = any((sp.fc_code or "").strip() for sp in batch.shipments)
     doc_count = db.query(GeneratedDoc).filter(GeneratedDoc.batch_id == batch.id).count()
     purchased = False
@@ -33,7 +36,7 @@ def _auto_status(db, batch):
         rec = (db.query(PurchasePlanConfirm)
                .filter(PurchasePlanConfirm.plan_group_no == batch.purchase_plan_no).first())
         purchased = bool(rec and rec.purchase_no)
-    return {"build": has_fc, "generate": doc_count > 0, "purchase": purchased}
+    return {"prep": prep_ready, "build": has_fc, "generate": doc_count > 0, "purchase": purchased}
 
 
 def compute(db, batch):

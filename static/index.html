@@ -485,14 +485,101 @@
       </div>
       <div class="sop-steps">
         <template v-for="(s,i) in batch.sop.steps" :key="s.key">
-          <div class="sop-step" :class="{done: s.done, cur: batch.sop.current===s.key, manual: s.type==='manual'}"
-               :title="s.desc + (s.type==='manual' ? '（点击勾选/取消）' : '（自动判定，点击前往处理）')"
-               tabindex="0" @click="toggleSop(s)" @keydown.enter="toggleSop(s)">
+          <div class="sop-step" :class="{done: s.done, cur: batch.sop.current===s.key, manual: s.type==='manual', active: sopActive===s.key}"
+               :title="s.desc" tabindex="0" @click="openSopStep(s)" @keydown.enter="openSopStep(s)">
             <span class="sop-dot">{{ s.done ? '✓' : (i+1) }}</span>
             <span class="sop-label">{{s.label}}</span>
             <span class="sop-tag" :class="s.type">{{ s.type==='auto' ? '自动' : '手动' }}</span>
           </div>
           <span v-if="i<batch.sop.steps.length-1" class="sop-arrow" :class="{done: s.done}">›</span>
+        </template>
+      </div>
+
+      <!-- 展开的步骤面板 -->
+      <div class="sop-panel" v-if="sopActive">
+        <div class="sop-panel-head">
+          <b>{{sopActiveStep && sopActiveStep.label}}</b>
+          <span class="muted">{{sopActiveStep && sopActiveStep.desc}}</span>
+          <span class="flex-1"></span>
+          <a class="link" @click="sopActive=''">收起 ✕</a>
+        </div>
+
+        <!-- ① 数据准备 -->
+        <template v-if="sopActive==='prep'">
+          <div v-if="prepLoading" class="empty">正在聚合补仓 / 建仓清单…</div>
+          <template v-else-if="prepData">
+            <div class="banner" :class="prepData.ready ? 'ok' : 'err'">
+              <div class="banner-title" v-if="prepData.ready">✓ 数据齐全（{{prepData.sku_count}} 个 SKU · 共 {{num(prepData.total_qty)}} 件），可进入采购 / 建仓</div>
+              <template v-else>
+                <div class="banner-title">⚠ 数据不齐（{{prepData.issues.length}} 项）—— 补齐后采购 / 建仓才稳</div>
+                <div v-for="(iss,ii) in prepData.issues" :key="ii" class="banner-line warn"><span class="dot"></span><span class="banner-msg">{{iss}}</span></div>
+              </template>
+              <button class="btn xs" @click="loadPrep">重新聚合</button>
+            </div>
+            <div class="prep-cols">
+              <div class="prep-col">
+                <h4 class="wiz-sec">补仓清单<span class="muted"> · 按 SKU 汇总数量</span></h4>
+                <div class="table-wrap"><table class="table sub">
+                  <thead><tr><th>SKU</th><th>品名</th><th class="num">总数量</th></tr></thead>
+                  <tbody>
+                    <tr v-for="(r,ri) in prepData.replenish" :key="ri"><td class="mono">{{r.msku}}</td><td class="ellipsis" :title="r.product_name">{{r.product_name||'-'}}</td><td class="num">{{num(r.qty)}}</td></tr>
+                  </tbody>
+                </table></div>
+              </div>
+              <div class="prep-col">
+                <h4 class="wiz-sec">建仓清单<span class="muted"> · SKU + 箱规(in/lb)</span></h4>
+                <div class="table-wrap"><table class="table sub">
+                  <thead><tr><th>SKU</th><th class="num">数量</th><th class="num">每箱</th><th class="num">长</th><th class="num">宽</th><th class="num">高</th><th class="num">重</th></tr></thead>
+                  <tbody>
+                    <tr v-for="(r,ri) in prepData.build" :key="ri" :class="{'row-warn': r.missing.length}">
+                      <td class="mono">{{r.msku}}</td><td class="num">{{num(r.qty)}}</td>
+                      <td class="num">{{r.units_per_box ?? '—'}}</td><td class="num">{{r.l_in ?? '—'}}</td>
+                      <td class="num">{{r.w_in ?? '—'}}</td><td class="num">{{r.h_in ?? '—'}}</td><td class="num">{{r.weight_lb ?? '—'}}</td>
+                    </tr>
+                  </tbody>
+                </table></div>
+              </div>
+            </div>
+          </template>
+        </template>
+
+        <!-- 建仓 -->
+        <template v-else-if="sopActive==='build'">
+          <div class="banner" :class="sopStepDone('build') ? 'ok' : ''">
+            <div class="banner-title" v-if="sopStepDone('build')">✓ 已分仓，目的仓：
+              <span v-for="(sp,si) in (batch.shipments||[])" :key="si" class="chip mono">{{sp.fc_code || '-'}}</span>
+            </div>
+            <div class="banner-title" v-else>尚未建仓。到「批次管理」页用 🏗️ 建仓向导完成（数据从产品库自动补箱规）。</div>
+          </div>
+          <a class="btn" href="#batches">→ 去建仓向导</a>
+        </template>
+
+        <!-- 采购 -->
+        <template v-else-if="sopActive==='purchase'">
+          <div class="banner" :class="sopStepDone('purchase') ? 'ok' : ''">
+            <div class="banner-title" v-if="sopStepDone('purchase')">✓ 已生成采购单</div>
+            <div class="banner-title" v-else>尚未生成采购单（采购计划 {{batch.purchase_plan_no || '—'}}）。去采购确认页完成工厂确认 → 生成采购单。</div>
+          </div>
+          <a class="btn" href="#purchase">→ 去采购确认</a>
+        </template>
+
+        <!-- 生成文件 -->
+        <template v-else-if="sopActive==='generate'">
+          <div class="banner" :class="sopStepDone('generate') ? 'ok' : ''">
+            <div class="banner-title">{{ sopStepDone('generate') ? '✓ 已生成文件，见「生成文件」标签' : '到「生成文件」标签勾选模板一键生成。' }}</div>
+          </div>
+          <button class="btn" @click="detailTab='generate'; sopActive=''">→ 去「生成文件」</button>
+        </template>
+
+        <!-- 手动步骤 -->
+        <template v-else>
+          <div class="sop-manual">
+            <span class="muted">这一步完成后,点右侧标记。</span>
+            <span class="flex-1"></span>
+            <button class="btn sm" :class="{primary: !(sopActiveStep && sopActiveStep.done)}" @click="toggleSop(sopActiveStep)">
+              {{ (sopActiveStep && sopActiveStep.done) ? '↩ 取消完成' : '✓ 标记完成' }}
+            </button>
+          </div>
         </template>
       </div>
     </div>

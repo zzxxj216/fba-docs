@@ -651,10 +651,14 @@ const PageBatchDetail = {
       previewBusyId: null, previewData: null, previewTpl: null, previewTab: 0,
       fieldMap: null,
       histOpen: {}, previewDoc: null,
+      sopActive: '', prepData: null, prepLoading: false,
       _vt: null,
     };
   },
   computed: {
+    sopActiveStep() {
+      return ((this.batch && this.batch.sop && this.batch.sop.steps) || []).find(s => s.key === this.sopActive) || null;
+    },
     isOffline() {
       return String((this.batch && this.batch.inbound_plan_id) || '').startsWith('offline-');
     },
@@ -713,14 +717,24 @@ const PageBatchDetail = {
     expandAllShips(open) {
       for (const s of (this.batch && this.batch.shipments) || []) this.shipOpen[s.id] = !!open;
     },
-    /* SOP 进度：manual 步骤勾选/取消；auto 步骤点击跳到对应动作 */
+    /* SOP 进度：点步骤 → 在进度条下方展开该步面板（做事/勾选） */
+    openSopStep(step) {
+      this.sopActive = (this.sopActive === step.key) ? '' : step.key;
+      if (this.sopActive === 'prep' && !this.prepData) this.loadPrep();
+    },
+    async loadPrep() {
+      this.prepLoading = true; this.prepData = null;
+      try { this.prepData = await api('/batches/' + this.arg + '/prep'); }
+      catch (e) { toast('聚合数据失败：' + e.message, 'err'); }
+      this.prepLoading = false;
+    },
+    sopStepDone(key) {
+      const s = ((this.batch && this.batch.sop && this.batch.sop.steps) || []).find(x => x.key === key);
+      return !!(s && s.done);
+    },
+    /* 手动步骤：勾选/取消完成 */
     async toggleSop(step) {
-      if (step.type !== 'manual') {
-        if (step.action === 'generate') this.detailTab = 'generate';
-        else if (step.action === 'purchase') location.hash = '#purchase';
-        else if (step.action === 'build') location.hash = '#batches';
-        return;
-      }
+      if (!step || step.type !== 'manual') return;
       try {
         const sop = await api('/batches/' + this.arg + '/sop', {
           method: 'POST', body: { step_key: step.key, done: !step.done },
