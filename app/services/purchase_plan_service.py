@@ -577,6 +577,13 @@ def import_plan_only(db, plan_group_no):
             if not msku:
                 continue
             p = db.query(Product).filter(Product.sku == msku).first()
+            if p is None:                       # 未匹配产品库 → 自动建档（赛狐商品接口补全）
+                raw = {"childItems": [{"commoditySku": msku,
+                                       "commodityName": _s(it.get("commodityName")),
+                                       "commodityImage": _s(it.get("mainImage"))}],
+                       "cartonQty": _i(it.get("cartonQty")),
+                       "purchaseCost": _f(it.get("purchaseCost"))}
+                p = ss._auto_create_product(db, msku, raw)
             db.add(ShipmentItem(
                 shipment_id=sp.id, product_id=(p.id if p else None), msku=msku,
                 qty=_i(it.get("planNum")) or 0,

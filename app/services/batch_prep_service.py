@@ -51,3 +51,33 @@ def aggregate(db, batch):
     return {"replenish": replenish, "build": build, "issues": issues,
             "ready": len(issues) == 0,
             "total_qty": sum(a["qty"] for a in agg.values()), "sku_count": len(agg)}
+
+
+def fill_missing_products(db, batch):
+    """对批次里产品库未匹配的 SKU，从赛狐商品接口自动建档。返回 {created, failed}。"""
+    from . import sync_service as ss
+    seen, created, failed = set(), [], []
+    for sp in batch.shipments:
+        for it in sp.items:
+            msku = (it.msku or "").strip()
+            if not msku or msku in seen:
+                continue
+            seen.add(msku)
+            if db.query(Product).filter(Product.sku == msku).first():
+                continue
+            raw = {"childItems": [{"commoditySku": msku}], "cartonQty": it.qty_per_box}
+            p = ss._auto_create_product(db, msku, raw)
+            if p:
+                created.append(msku)
+            else:
+                failed.append(msku)
+    # 把新建产品回链到对应明细
+    if created:
+        for sp in batch.shipments:
+            for it in sp.items:
+                if it.product_id is None:
+                    p = db.query(Product).filter(Product.sku == (it.msku or "").strip()).first()
+                    if p:
+                        it.product_id = p.id
+    db.commit()
+    return {"created": created, "failed": failed}

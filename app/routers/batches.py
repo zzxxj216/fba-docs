@@ -127,6 +127,17 @@ def batch_prep(batch_id: int, db: Session = Depends(get_db)):
     return batch_prep_service.aggregate(db, b)
 
 
+@router.post("/batches/{batch_id}/prep/fill-products")
+def batch_fill_products(batch_id: int, db: Session = Depends(get_db)):
+    """一键从赛狐商品接口给未匹配 SKU 自动建档，再返回最新聚合。"""
+    b = db.get(Batch, batch_id)
+    if b is None:
+        raise HTTPException(404, f"批次 {batch_id} 不存在")
+    res = batch_prep_service.fill_missing_products(db, b)
+    res["prep"] = batch_prep_service.aggregate(db, b)
+    return res
+
+
 @router.post("/batches/{batch_id}/sop")
 def toggle_sop(batch_id: int, data: dict, db: Session = Depends(get_db)):
     """勾选/取消一个 SOP 手动步骤。body: {step_key, done}。返回最新 SOP 进度。"""

@@ -743,6 +743,19 @@ const PageBatchDetail = {
       catch (e) { toast('聚合数据失败：' + e.message, 'err'); }
       this.prepLoading = false;
     },
+    async fillProducts() {
+      if (this.prepLoading) return;
+      this.prepLoading = true;
+      try {
+        const r = await api('/batches/' + this.arg + '/prep/fill-products', { method: 'POST' });
+        this.prepData = r.prep;
+        const c = (r.created || []).length, f = (r.failed || []).length;
+        if (f) toast('建档：成功 ' + c + ' 个，失败 ' + f + ' 个（赛狐商品库也查不到，需手动建）', 'err');
+        else toast('已从赛狐建档 ' + c + ' 个 SKU');
+        this.reload();   // 刷新 SOP / 校验
+      } catch (e) { toast('自动建档失败：' + e.message, 'err'); }
+      this.prepLoading = false;
+    },
     sopStepDone(key) {
       const s = ((this.batch && this.batch.sop && this.batch.sop.steps) || []).find(x => x.key === key);
       return !!(s && s.done);

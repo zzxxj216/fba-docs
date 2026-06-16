@@ -521,7 +521,10 @@
                 <div class="banner-title">⚠ 数据不齐（{{prepData.issues.length}} 项）—— 补齐后采购 / 建仓才稳</div>
                 <div v-for="(iss,ii) in prepData.issues" :key="ii" class="banner-line warn"><span class="dot"></span><span class="banner-msg">{{iss}}</span></div>
               </template>
-              <button class="btn xs" @click="loadPrep">重新聚合</button>
+              <div class="prep-acts">
+                <button class="btn xs primary" :class="{loading: prepLoading}" :disabled="prepLoading" @click="fillProducts" title="对产品库未匹配的 SKU，从赛狐商品接口拉报关名/HS/箱规/申报单价自动建档">从赛狐自动建档缺失 SKU</button>
+                <button class="btn xs" @click="loadPrep">重新聚合</button>
+              </div>
             </div>
             <div class="prep-cols">
               <div class="prep-col">

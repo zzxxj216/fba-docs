@@ -979,3 +979,5 @@ input[type="checkbox"] { accent-color: var(--primary); }
 .table tr.row-warn td{background:#FFF7ED}
 
 .empty-acts{display:flex;gap:8px;justify-content:center;margin-top:8px}
+
+.prep-acts{display:flex;gap:6px;margin-top:6px}
