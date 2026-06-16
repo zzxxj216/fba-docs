@@ -751,9 +751,9 @@ const PageBatchDetail = {
       try {
         const r = await api('/batches/' + this.arg + '/prep/fill-products', { method: 'POST' });
         this.prepData = r.prep;
-        const c = (r.created || []).length, f = (r.failed || []).length;
-        if (f) toast('建档：成功 ' + c + ' 个，失败 ' + f + ' 个（赛狐商品库也查不到，需手动建）', 'err');
-        else toast('已从赛狐建档 ' + c + ' 个 SKU');
+        const c = (r.created || []).length, f = (r.failed || []).length, rf = (r.refreshed || []).length;
+        if (f) toast('建档：新建 ' + c + ' 个，失败 ' + f + ' 个（赛狐商品库也查不到，需手动建）', 'err');
+        else toast('赛狐对齐：新建 ' + c + ' 个、补全 ' + rf + ' 个 SKU');
         this.reload();   // 刷新 SOP / 校验
       } catch (e) { toast('自动建档失败：' + e.message, 'err'); }
       this.prepLoading = false;
@@ -846,11 +846,20 @@ const PageBatchDetail = {
       }
       this.resyncBusy = true;
       try {
-        const r = await api('/sync/import', { method: 'POST', body: { inbound_plan_id: this.batch.inbound_plan_id } });
-        await this.reload(false);
-        if (r && r.report) this.report = r.report;
-        const n = ((r && r.report && r.report.errors) || []).length;
-        toast('重新同步完成（人工修改字段已保护）' + (n ? '，校验提示 ' + n + ' 项' : ''));
+        if (!this.batch.inbound_plan_id) {
+          // 无赛狐 STA（补仓/采购计划导入或尚未建仓）→ 改为从赛狐商品库刷新报关/箱规资料
+          const r = await api('/batches/' + this.arg + '/prep/fill-products', { method: 'POST' });
+          if (r && r.prep) this.prepData = r.prep;
+          await this.reload(false);
+          const c = (r.created || []).length, rf = (r.refreshed || []).length;
+          toast('该批次无 STA 入库计划，已从赛狐刷新商品资料（新建 ' + c + '、补全 ' + rf + '）并重新聚合');
+        } else {
+          const r = await api('/sync/import', { method: 'POST', body: { inbound_plan_id: this.batch.inbound_plan_id } });
+          await this.reload(false);
+          if (r && r.report) this.report = r.report;
+          const n = ((r && r.report && r.report.errors) || []).length;
+          toast('重新同步完成（人工修改字段已保护）' + (n ? '，校验提示 ' + n + ' 项' : ''));
+        }
       } catch (e) { toast('重新同步失败：' + e.message, 'err'); }
       this.resyncBusy = false;
     },

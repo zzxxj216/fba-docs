@@ -430,8 +430,17 @@ def build_for_batch(db, batch):
 
     api_items = [{"msku": it["msku"], "quantity": it["quantity"],
                   "prep_owner": "SELLER", "label_owner": "SELLER"} for it in items]
-    resp = fba.call("POST", "/inbound-plans", store=store, timeout=90,
-                    json={"name": batch.name, "source_address": SOURCE_ADDRESS, "items": api_items})
+    try:
+        resp = fba.call("POST", "/inbound-plans", store=store, timeout=90,
+                        json={"name": batch.name, "source_address": SOURCE_ADDRESS, "items": api_items})
+    except RuntimeError as e:
+        acct = store or "main(默认)"
+        emsg = str(e)
+        if "not valid" in emsg or "MSKU" in emsg or "BadRequest" in emsg:
+            raise RuntimeError(
+                f"建仓账户=「{acct}」拒绝了这些 SKU（多半是该品牌没映射到正确的亚马逊账户）。"
+                f"请在「主体与品牌」给品牌设置 amazon_store、并确保该账户凭据已配进 mcapi。原始：{emsg[:160]}")
+        raise
     pid = resp.get("inboundPlanId", "")
     if resp.get("operationId"):
         fba.wait_operation(resp["operationId"], store=store, timeout=120)

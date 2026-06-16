@@ -92,23 +92,31 @@ def aggregate(db, batch):
 
 
 def fill_missing_products(db, batch):
-    """对批次里产品库未匹配的 SKU，从赛狐商品接口自动建档。返回 {created, failed}。"""
+    """从赛狐商品接口对齐批次产品资料。返回 {created, failed, refreshed}。
+
+    - 未匹配的 SKU → 自动建档
+    - 已存在的 SKU → 回填仍为空的报关/箱规字段（不覆盖已有值）
+    没有 STA 的批次（补仓/采购计划导入）走这条路当"重新同步"。
+    """
     from . import sync_service as ss
-    seen, created, failed = set(), [], []
+    seen, created, failed, refreshed = set(), [], [], []
     for sp in batch.shipments:
         for it in sp.items:
             msku = (it.msku or "").strip()
             if not msku or msku in seen:
                 continue
             seen.add(msku)
-            if db.query(Product).filter(Product.sku == msku).first():
-                continue
-            raw = {"childItems": [{"commoditySku": msku}], "cartonQty": it.qty_per_box}
-            p = ss._auto_create_product(db, msku, raw)
-            if p:
-                created.append(msku)
+            p = db.query(Product).filter(Product.sku == msku).first()
+            if p is None:
+                raw = {"childItems": [{"commoditySku": msku}], "cartonQty": it.qty_per_box}
+                p = ss._auto_create_product(db, msku, raw)
+                (created if p else failed).append(msku)
             else:
-                failed.append(msku)
+                try:
+                    if ss.refresh_product_declares(db, p):
+                        refreshed.append(msku)
+                except Exception:
+                    pass
     # 回链产品 + 补申报单价到明细（无论是否新建，方便修历史批次）
     for sp in batch.shipments:
         for it in sp.items:
@@ -123,4 +131,4 @@ def fill_missing_products(db, batch):
             if (it.customs_unit_price in (None, 0)) and p.unit_price_default:
                 it.customs_unit_price = p.unit_price_default
     db.commit()
-    return {"created": created, "failed": failed}
+    return {"created": created, "failed": failed, "refreshed": refreshed}

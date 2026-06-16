@@ -153,6 +153,50 @@ def _auto_create_product(db, msku, raw):
     return p
 
 
+def refresh_product_declares(db, p):
+    """对已存在产品，从赛狐商品库回填仍为空的报关/箱规字段。
+
+    只填空值、不覆盖已有值（保护人工修改与本地权威数据）。返回 True 若有更新。
+    赛狐缺的字段（如部分 SKU 的"用途"）依然空，需赛狐端补或人工补。
+    """
+    sku = _s(p.sku).strip()
+    if not sku:
+        return False
+    try:
+        data = sf.call("/api/commodity/pageList.json",
+                       {"pageNo": 1, "pageSize": 10, "skus": [sku]}) or {}
+        row = next((r for r in (data.get("rows") or []) if _s(r.get("sku")) == sku), None)
+    except Exception:
+        return False
+    if not row:
+        return False
+    changed = False
+
+    def fill(attr, val):
+        nonlocal changed
+        cur = getattr(p, attr)
+        if cur in (None, "", 0) and val not in (None, "", 0):
+            setattr(p, attr, val)
+            changed = True
+
+    fill("name_customs_cn", _s(row.get("declareNameCh")))
+    fill("name_customs_en", _s(row.get("declareNameEn")))
+    fill("hs_code", _s(row.get("hsCode")))
+    fill("material", _s(row.get("declareMaterial")) or _s(row.get("materialQuality")))
+    fill("usage", _s(row.get("declareUseTo")) or _s(row.get("useTo")))
+    fill("brand_name", _s(row.get("brandName")))
+    fill("model", _s(row.get("declareModel")) or _s(row.get("model")))
+    fill("box_weight_kg", _f(row.get("cartonWeight")))
+    fill("carton_l_cm", _f(row.get("cartonLength")))
+    fill("carton_w_cm", _f(row.get("cartonWidth")))
+    fill("carton_h_cm", _f(row.get("cartonHeight")))
+    fill("qty_per_box", _i(row.get("cartonQty")))
+    fill("unit_price_default", _f(row.get("declareCharge")))
+    if changed:
+        db.flush()
+    return changed
+
+
 # ---------------------------------------------------------------- 店铺名缓存
 #
 # 计划列表 /api/inbound/plan/page.json 只给 shopId（数字）和空的 inboundPlanName，
