@@ -987,3 +987,7 @@ input[type="checkbox"] { accent-color: var(--primary); }
 .prob-cell{white-space:normal;min-width:150px;line-height:1.8}
 .prob-cell .chip-warn{margin:1px 2px}
 .chip-warn{background:#FFF4E5;color:#B45309;font-size:11px;padding:1px 6px;border-radius:4px}
+
+/* 分仓方案对比 */
+.placement-opt{border:1px solid var(--border-soft);border-radius:8px;padding:10px 12px;margin-bottom:10px}
+.placement-head{display:flex;align-items:center;gap:10px;margin-bottom:6px}

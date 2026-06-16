@@ -564,7 +564,29 @@
             </div>
             <div class="banner-title" v-else>尚未建仓。到「批次管理」页用 🏗️ 建仓向导完成（数据从产品库自动补箱规）。</div>
           </div>
-          <a class="btn" href="#batches">→ 去建仓向导</a>
+          <a v-if="!(batch.placement_options||[]).length" class="btn" href="#batches">→ 去建仓向导</a>
+
+          <!-- 分仓方案（亚马逊已生成，分仓/合仓对比，未确认）-->
+          <template v-if="(batch.placement_options||[]).length">
+            <h4 class="wiz-sec">分仓方案<span class="muted"> · 亚马逊已生成、未确认（分仓 vs 合仓，货代问价用）</span></h4>
+            <div v-for="(o,oi) in batch.placement_options" :key="oi" class="placement-opt">
+              <div class="placement-head">
+                <b>{{o.label}}</b>
+                <span class="badge" :class="o.fee_usd>0 ? 'b-orange' : 'b-green'">分仓费 ${{o.fee_usd}}</span>
+                <span class="muted">{{(o.shipments||[]).length}} 仓 · {{sumK(o,'boxes')}} 箱 · {{sumK(o,'weight_kg')}} kg · {{sumK(o,'units')}} 件</span>
+              </div>
+              <div class="table-wrap"><table class="table sub">
+                <thead><tr><th>目的仓 FC</th><th>城市 / 州</th><th class="num">件</th><th class="num">箱</th><th class="num">重kg</th></tr></thead>
+                <tbody>
+                  <tr v-for="(s,si) in o.shipments" :key="si">
+                    <td class="mono">{{s.fc}}</td><td>{{s.city}}, {{s.state}}</td>
+                    <td class="num">{{num(s.units)}}</td><td class="num">{{num(s.boxes)}}</td><td class="num">{{s.weight_kg}}</td>
+                  </tr>
+                </tbody>
+              </table></div>
+            </div>
+          </template>
+
           <template v-if="prepData">
             <h4 class="wiz-sec">建仓清单<span class="muted"> · SKU + 箱规(in/lb)，缺箱规标黄</span></h4>
             <div class="table-wrap"><table class="table sub">

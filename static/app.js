@@ -761,6 +761,9 @@ const PageBatchDetail = {
       const s = ((this.batch && this.batch.sop && this.batch.sop.steps) || []).find(x => x.key === key);
       return !!(s && s.done);
     },
+    sumK(opt, key) {
+      return (opt.shipments || []).reduce((a, s) => a + (Number(s[key]) || 0), 0).toFixed(key === 'weight_kg' ? 1 : 0);
+    },
     /* 手动步骤：勾选/取消完成 */
     async toggleSop(step) {
       if (!step || step.type !== 'manual') return;

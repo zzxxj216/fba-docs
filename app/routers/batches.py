@@ -115,6 +115,10 @@ def batch_full(batch_id: int, db: Session = Depends(get_db)):
         suggested.append(t.id)
     result["suggested_template_ids"] = suggested
     result["sop"] = sop_flow.compute(db, b)
+    try:
+        result["placement_options"] = json.loads(b.placement_options or "[]")
+    except (ValueError, TypeError):
+        result["placement_options"] = []
     return result
 
 
