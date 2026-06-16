@@ -590,6 +590,7 @@ def import_plan_only(db, plan_group_no):
                 qty_per_box=_i(it.get("cartonQty")),
                 box_count=_i(it.get("cartonNum")),
                 purchase_cost=_f(it.get("purchaseCost")),
+                customs_unit_price=(p.unit_price_default if p else None),
             ))
     db.commit()
     return {"batch_id": batch.id, "created": created,

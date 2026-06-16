@@ -71,13 +71,18 @@ def fill_missing_products(db, batch):
                 created.append(msku)
             else:
                 failed.append(msku)
-    # 把新建产品回链到对应明细
-    if created:
-        for sp in batch.shipments:
-            for it in sp.items:
-                if it.product_id is None:
-                    p = db.query(Product).filter(Product.sku == (it.msku or "").strip()).first()
-                    if p:
-                        it.product_id = p.id
+    # 回链产品 + 补申报单价到明细（无论是否新建，方便修历史批次）
+    for sp in batch.shipments:
+        for it in sp.items:
+            msku = (it.msku or "").strip()
+            if not msku:
+                continue
+            p = db.query(Product).filter(Product.sku == msku).first()
+            if not p:
+                continue
+            if it.product_id is None:
+                it.product_id = p.id
+            if (it.customs_unit_price in (None, 0)) and p.unit_price_default:
+                it.customs_unit_price = p.unit_price_default
     db.commit()
     return {"created": created, "failed": failed}
