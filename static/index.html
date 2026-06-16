@@ -526,11 +526,31 @@
                 <button class="btn xs" @click="loadPrep">重新聚合</button>
               </div>
             </div>
-            <h4 class="wiz-sec">补仓清单<span class="muted"> · 按 SKU 汇总数量</span></h4>
-            <div class="table-wrap"><table class="table sub">
-              <thead><tr><th>SKU</th><th>品名</th><th class="num">总数量</th></tr></thead>
+            <h4 class="wiz-sec">补仓清单 · 数据体检<span class="muted"> · 建仓前逐项检查，缺的标红、行标黄</span></h4>
+            <div class="table-wrap" style="overflow-x:auto"><table class="table sub">
+              <thead><tr>
+                <th>SKU</th><th>品名</th><th class="num">数量</th><th class="num">每箱</th><th class="num">外箱</th>
+                <th class="num">长in</th><th class="num">宽in</th><th class="num">高in</th><th class="num">重lb</th>
+                <th class="num">申报价</th><th>HS编码</th><th>问题</th>
+              </tr></thead>
               <tbody>
-                <tr v-for="(r,ri) in prepData.replenish" :key="ri"><td class="mono">{{r.msku}}</td><td class="ellipsis" :title="r.product_name">{{r.product_name||'-'}}</td><td class="num">{{num(r.qty)}}</td></tr>
+                <tr v-for="(r,ri) in prepData.detail" :key="ri" :class="{'row-warn': !r.ok}">
+                  <td class="mono">{{r.msku}}</td>
+                  <td class="ellipsis" :title="r.product_name" :class="{'cell-bad': !r.product_name}">{{r.product_name || '缺'}}</td>
+                  <td class="num">{{num(r.qty)}}</td>
+                  <td class="num" :class="{'cell-bad': r.units_per_box==null}">{{r.units_per_box ?? '缺'}}</td>
+                  <td class="num">{{r.boxes || '—'}}</td>
+                  <td class="num" :class="{'cell-bad': r.l_in==null}">{{r.l_in ?? '缺'}}</td>
+                  <td class="num" :class="{'cell-bad': r.w_in==null}">{{r.w_in ?? '缺'}}</td>
+                  <td class="num" :class="{'cell-bad': r.h_in==null}">{{r.h_in ?? '缺'}}</td>
+                  <td class="num" :class="{'cell-bad': r.weight_lb==null}">{{r.weight_lb ?? '缺'}}</td>
+                  <td class="num" :class="{'cell-bad': !r.customs_unit_price}">{{r.customs_unit_price ?? '缺'}}</td>
+                  <td class="mono" :class="{'cell-bad': !r.hs_code}">{{r.hs_code || '缺'}}</td>
+                  <td class="prob-cell">
+                    <span v-if="!r.problems.length" class="badge b-green">OK</span>
+                    <span v-for="(pb,pi) in r.problems" :key="pi" class="chip chip-warn">{{pb}}</span>
+                  </td>
+                </tr>
               </tbody>
             </table></div>
           </template>

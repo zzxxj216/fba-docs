@@ -981,3 +981,9 @@ input[type="checkbox"] { accent-color: var(--primary); }
 .empty-acts{display:flex;gap:8px;justify-content:center;margin-top:8px}
 
 .prep-acts{display:flex;gap:6px;margin-top:6px}
+
+/* 数据体检 缺失高亮 */
+.cell-bad{color:#d9534f;font-weight:600}
+.prob-cell{white-space:normal;min-width:150px;line-height:1.8}
+.prob-cell .chip-warn{margin:1px 2px}
+.chip-warn{background:#FFF4E5;color:#B45309;font-size:11px;padding:1px 6px;border-radius:4px}

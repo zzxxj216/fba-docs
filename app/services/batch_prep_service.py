@@ -14,19 +14,27 @@ LB_PER_KG = 2.20462
 
 
 def aggregate(db, batch):
-    """按 SKU 聚合 → {replenish, build, issues, ready, total_qty, sku_count}。"""
+    """按 SKU 聚合成"建仓前数据体检" → {detail, replenish, build, issues, ready, total_qty, sku_count}。
+
+    detail：每个 SKU 一行，含 数量/每箱/外箱/箱规(in)/箱重(lb)/申报单价/HS/申报要素/是否自动建档，
+            并逐行列出 problems（缺箱规/缺品名/缺申报价/缺HS/缺申报要素/自动建档待核对）。
+    建仓前可能有问题的数据全部显示出来，便于先补齐再建仓。
+    """
     agg = {}
     for sp in batch.shipments:
         for it in sp.items:
             msku = (it.msku or "").strip()
             if not msku:
                 continue
-            a = agg.setdefault(msku, {"qty": 0, "name": ""})
+            a = agg.setdefault(msku, {"qty": 0, "boxes": 0, "name": "", "unit_price": None})
             a["qty"] += it.qty or 0
+            a["boxes"] += it.box_count or 0
+            if a["unit_price"] is None and it.customs_unit_price:
+                a["unit_price"] = it.customs_unit_price
             if not a["name"] and it.product and it.product.name_customs_cn:
                 a["name"] = it.product.name_customs_cn
 
-    replenish, build, issues = [], [], []
+    detail, replenish, build, issues = [], [], [], []
     for msku in sorted(agg):
         a = agg[msku]
         p = db.query(Product).filter(Product.sku == msku).first()
@@ -36,21 +44,47 @@ def aggregate(db, batch):
         w = round(p.carton_w_cm / CM_PER_IN, 2) if p and p.carton_w_cm else None
         h = round(p.carton_h_cm / CM_PER_IN, 2) if p and p.carton_h_cm else None
         wt = round(p.box_weight_kg * LB_PER_KG, 2) if p and p.box_weight_kg else None
-        miss = [k for k, v in (("每箱数", upb), ("箱长", l), ("箱宽", w), ("箱高", h), ("箱重", wt)) if not v]
+        unit_price = a["unit_price"] or (p.unit_price_default if p else None)
+        hs = (p.hs_code if p else "") or ""
+        has_elements = bool(p and (p.declare_elements or "").strip())
+        auto = bool(p and "自动建档" in (p.remark or ""))
+        box_miss = [k for k, v in (("每箱数", upb), ("长", l), ("宽", w), ("高", h), ("重", wt)) if not v]
 
+        problems = []
+        if not p:
+            problems.append("产品库无此SKU")
+        if not name:
+            problems.append("缺品名")
+        if box_miss:
+            problems.append("缺箱规(" + "、".join(box_miss) + ")")
+        if not unit_price:
+            problems.append("缺申报单价")
+        if not hs:
+            problems.append("缺HS编码")
+        if p and not has_elements:
+            problems.append("缺申报要素")
+        if auto:
+            problems.append("自动建档待核对")
+
+        # 阻断 ready 的硬问题（建仓/报关必需）；自动建档/申报要素只是提醒
+        hard = bool((not p) or box_miss or (not name) or (not unit_price) or (not hs))
+
+        detail.append({
+            "msku": msku, "product_name": name, "qty": a["qty"], "boxes": a["boxes"],
+            "units_per_box": upb, "l_in": l, "w_in": w, "h_in": h, "weight_lb": wt,
+            "customs_unit_price": unit_price, "hs_code": hs,
+            "has_elements": has_elements, "auto_created": auto,
+            "in_lib": bool(p), "problems": problems, "ok": not hard,
+        })
         replenish.append({"msku": msku, "qty": a["qty"], "product_name": name})
         build.append({"msku": msku, "qty": a["qty"], "units_per_box": upb,
-                      "l_in": l, "w_in": w, "h_in": h, "weight_lb": wt, "missing": miss})
-        if not p:
-            issues.append(f"{msku}：产品库无此 SKU（无法补箱规）")
-        elif miss:
-            issues.append(f"{msku}：缺 {('、').join(miss)}")
-        if not name:
-            issues.append(f"{msku}：缺中文报关名")
+                      "l_in": l, "w_in": w, "h_in": h, "weight_lb": wt, "missing": box_miss})
+        if problems:
+            issues.append(f"{msku}：{('、').join(problems)}")
 
-    return {"replenish": replenish, "build": build, "issues": issues,
-            "ready": len(issues) == 0,
-            "total_qty": sum(a["qty"] for a in agg.values()), "sku_count": len(agg)}
+    ready = all(d["ok"] for d in detail)
+    return {"detail": detail, "replenish": replenish, "build": build, "issues": issues,
+            "ready": ready, "total_qty": sum(a["qty"] for a in agg.values()), "sku_count": len(agg)}
 
 
 def fill_missing_products(db, batch):
