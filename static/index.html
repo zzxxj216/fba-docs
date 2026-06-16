@@ -476,6 +476,27 @@
       </div>
     </div>
 
+    <!-- SOP 流程进度 -->
+    <div class="card sop-card" v-if="batch.sop">
+      <div class="sop-head">
+        <span class="sop-title">📋 SOP 流程</span>
+        <span class="sop-prog">{{batch.sop.done_count}} / {{batch.sop.total}} 步</span>
+        <div class="sop-bar"><div class="sop-bar-fill" :style="{width: sopPct()+'%'}"></div></div>
+      </div>
+      <div class="sop-steps">
+        <template v-for="(s,i) in batch.sop.steps" :key="s.key">
+          <div class="sop-step" :class="{done: s.done, cur: batch.sop.current===s.key, manual: s.type==='manual'}"
+               :title="s.desc + (s.type==='manual' ? '（点击勾选/取消）' : '（自动判定，点击前往处理）')"
+               tabindex="0" @click="toggleSop(s)" @keydown.enter="toggleSop(s)">
+            <span class="sop-dot">{{ s.done ? '✓' : (i+1) }}</span>
+            <span class="sop-label">{{s.label}}</span>
+            <span class="sop-tag" :class="s.type">{{ s.type==='auto' ? '自动' : '手动' }}</span>
+          </div>
+          <span v-if="i<batch.sop.steps.length-1" class="sop-arrow" :class="{done: s.done}">›</span>
+        </template>
+      </div>
+    </div>
+
     <!-- 页内标签页 -->
     <div class="tabs">
       <a tabindex="0" :class="{active: detailTab==='overview'}" @click="detailTab='overview'" @keydown.enter="detailTab='overview'">

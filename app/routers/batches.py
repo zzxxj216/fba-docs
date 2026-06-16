@@ -14,6 +14,7 @@ from sqlalchemy.orm import Session
 from ..database import OUTPUT_DIR, get_db
 from ..models import Batch, Forwarder, GeneratedDoc, Shipment, ShipmentItem, Template
 from ..services import validate_service
+from .. import sop_flow
 
 router = APIRouter()
 
@@ -113,7 +114,21 @@ def batch_full(batch_id: int, db: Session = Depends(get_db)):
             continue
         suggested.append(t.id)
     result["suggested_template_ids"] = suggested
+    result["sop"] = sop_flow.compute(db, b)
     return result
+
+
+@router.post("/batches/{batch_id}/sop")
+def toggle_sop(batch_id: int, data: dict, db: Session = Depends(get_db)):
+    """勾选/取消一个 SOP 手动步骤。body: {step_key, done}。返回最新 SOP 进度。"""
+    b = db.get(Batch, batch_id)
+    if b is None:
+        raise HTTPException(404, f"批次 {batch_id} 不存在")
+    data = data or {}
+    try:
+        return sop_flow.toggle(db, b, data.get("step_key", ""), bool(data.get("done", True)))
+    except RuntimeError as e:
+        raise HTTPException(400, str(e))
 
 
 @router.get("/batches/{batch_id}/validate")

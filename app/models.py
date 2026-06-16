@@ -188,6 +188,7 @@ class Batch(Base):
     base_date = Column(String(16), default="")       # 发货基准日(周五) YYYY-MM-DD
     contract_date = Column(String(16), default="")   # 合同日期(规则算出,可改)
     status = Column(String(16), default="已同步")     # 已同步/已核对/已生成/待投保/完成
+    sop_done = Column(Text)                          # SOP 流程已手动标记完成的步骤 key（JSON list）
     synced_at = Column(DateTime)
     remark = Column(Text)
     created_at = Column(DateTime, default=datetime.now)

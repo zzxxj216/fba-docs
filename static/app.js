@@ -713,6 +713,25 @@ const PageBatchDetail = {
     expandAllShips(open) {
       for (const s of (this.batch && this.batch.shipments) || []) this.shipOpen[s.id] = !!open;
     },
+    /* SOP 进度：manual 步骤勾选/取消；auto 步骤点击跳到对应动作 */
+    async toggleSop(step) {
+      if (step.type !== 'manual') {
+        if (step.action === 'generate') this.detailTab = 'generate';
+        else if (step.action === 'purchase') location.hash = '#purchase';
+        else if (step.action === 'build') location.hash = '#batches';
+        return;
+      }
+      try {
+        const sop = await api('/batches/' + this.arg + '/sop', {
+          method: 'POST', body: { step_key: step.key, done: !step.done },
+        });
+        if (this.batch) this.batch.sop = sop;
+      } catch (e) { toast('更新进度失败：' + e.message, 'err'); }
+    },
+    sopPct() {
+      const s = this.batch && this.batch.sop;
+      return s && s.total ? Math.round(100 * s.done_count / s.total) : 0;
+    },
     async reload(first) {
       try {
         this.batch = await api('/batches/' + this.arg + '/full');
