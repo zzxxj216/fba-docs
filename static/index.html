@@ -594,8 +594,8 @@
       </div>
     </div>
 
-    <!-- 页内标签页 -->
-    <div class="tabs">
+    <!-- 页内标签页（选中 SOP 步骤时隐藏，聚焦该步内容） -->
+    <div class="tabs" v-show="!sopActive">
       <a tabindex="0" :class="{active: detailTab==='overview'}" @click="detailTab='overview'" @keydown.enter="detailTab='overview'">
         概览<span v-if="reportErrors.length" class="tab-dot" title="校验未通过"></span>
       </a>
@@ -608,7 +608,7 @@
     </div>
 
     <!-- ============ 概览 tab ============ -->
-    <div v-show="detailTab==='overview'">
+    <div v-show="!sopActive && detailTab==='overview'">
       <!-- totals 统计卡 -->
       <div v-if="Object.keys(totalChips).length" class="stats-row compact">
         <div v-for="(v,k) in totalChips" :key="k" class="stat-card">
@@ -650,7 +650,7 @@
     </div>
 
     <!-- ============ 货件明细 tab ============ -->
-    <div v-show="detailTab==='shipments'">
+    <div v-show="!sopActive && detailTab==='shipments'">
       <div v-if="(batch.shipments||[]).length" class="ship-toolbar">
         <button class="btn sm" @click="expandAllShips(true)">全部展开</button>
         <button class="btn sm" @click="expandAllShips(false)">全部折叠</button>
@@ -723,7 +723,7 @@
     </div>
 
     <!-- ============ 生成文件 tab ============ -->
-    <div v-show="detailTab==='generate'">
+    <div v-show="!sopActive && detailTab==='generate'">
       <!-- 精简校验提示 -->
       <div v-if="reportErrors.length" class="banner err gen-validate-tip">
         <div class="banner-line error">
