@@ -4,13 +4,36 @@
 前端按向导逐步调用即可。路径不带 /api 前缀，main.py 统一加。
 """
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 from sqlalchemy.orm import Session
 
 from ..database import get_db
 from ..services import inbound_service as ibs
 
 router = APIRouter()
+
+
+# ---------------------------------------------------------------- 来源：明细组装
+
+@router.post("/inbound/parse-excel")
+async def parse_excel(file: UploadFile = File(...)):
+    """解析上传的补仓计划 Excel → 建仓明细（供核对，不落库）。"""
+    content = await file.read()
+    if not content:
+        raise HTTPException(400, "上传文件为空")
+    try:
+        return {"items": ibs.parse_replenishment_excel(content)}
+    except RuntimeError as e:
+        raise HTTPException(400, str(e))
+
+
+@router.get("/inbound/from-purchase-plan/{plan_group_no}")
+def from_purchase_plan(plan_group_no: str, db: Session = Depends(get_db)):
+    """从赛狐采购计划取建仓明细（SKU+采购量），箱规留空待产品库补/手填。"""
+    try:
+        return ibs.items_from_purchase_plan(db, plan_group_no)
+    except RuntimeError as e:
+        raise HTTPException(404, str(e))
 
 
 @router.get("/inbound/plans")

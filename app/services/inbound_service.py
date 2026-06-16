@@ -8,8 +8,11 @@
         →[人工选目的仓方案]→分仓已确认→（运输/完成在阶段2）
 """
 
+import io
 import json
 import math
+
+from openpyxl import load_workbook
 
 from .. import amazon_fba_client as fba
 from ..models import Brand, InboundPlan, Product
@@ -107,6 +110,117 @@ def _resolve_items(db, raw_items):
     if not out:
         raise RuntimeError("建仓明细为空")
     return out
+
+
+# ---------------------------------------------------------------- 来源：补仓计划 Excel / 赛狐采购计划
+
+# 列关键词（归一化后按子串匹配）；声明顺序=认领顺序，先认领更专指的列
+_COL_KEYS = [
+    ("msku", ["amazon-sku", "amazonsku", "amazon sku", "msku", "sku"]),
+    ("units_per_box", ["每箱商品数", "每箱数", "每箱", "units per box", "unitsperbox", "units/box"]),
+    ("boxes", ["外箱数", "箱数", "number of boxes", "numberofboxes", "外箱", "boxes"]),
+    ("quantity", ["补仓数量", "补货数量", "数量", "quantity", "qty"]),
+    ("l_in", ["box length", "length", "长"]),
+    ("w_in", ["box width", "width", "宽"]),
+    ("h_in", ["box height", "height", "高"]),
+    ("weight_lb", ["box weight", "weight", "重量", "重"]),
+]
+
+
+def _norm(s):
+    return str(s or "").strip().lower().replace(" ", "")
+
+
+def _num(v):
+    if v is None or v == "":
+        return None
+    try:
+        f = float(str(v).replace(",", ""))
+        return int(f) if f == int(f) else round(f, 2)
+    except (ValueError, TypeError):
+        return None
+
+
+def parse_replenishment_excel(content):
+    """解析补仓计划 Excel → 建仓明细 raw_items。
+
+    按表头关键词映射列：AMAZON-SKU/补仓数量/每箱商品数/外箱数/长/宽/高/重(IN/LB)。
+    返回 [{msku,quantity,units_per_box,boxes,l_in,w_in,h_in,weight_lb}]；缺的留空（建仓时从产品库补/手填）。
+    """
+    wb = load_workbook(io.BytesIO(content), data_only=True, read_only=True)
+    ws = wb.active
+    rows = [list(r) for r in ws.iter_rows(values_only=True)]
+    wb.close()
+    if not rows:
+        raise RuntimeError("Excel 为空")
+
+    # 找表头行：前 10 行里关键词命中最多的一行
+    best_i, best_map, best_hits = 0, {}, -1
+    for i, row in enumerate(rows[:10]):
+        norm_cells = [_norm(c) for c in row]
+        claimed = set()
+        colmap = {}
+        for field, keys in _COL_KEYS:
+            for ci, cell in enumerate(norm_cells):
+                if ci in claimed or not cell:
+                    continue
+                if any(k.replace(" ", "") in cell for k in keys):
+                    colmap[field] = ci
+                    claimed.add(ci)
+                    break
+        hits = len(colmap)
+        if hits > best_hits:
+            best_i, best_map, best_hits = i, colmap, hits
+
+    if "msku" not in best_map or "quantity" not in best_map:
+        raise RuntimeError("未识别到 SKU / 数量列，请确认补仓计划表头（需含 AMAZON-SKU、补仓数量等）")
+
+    items = []
+    for row in rows[best_i + 1:]:
+        msku = str(row[best_map["msku"]] or "").strip() if best_map.get("msku") is not None else ""
+        qty = _num(row[best_map["quantity"]]) if best_map.get("quantity") is not None else None
+        if not msku or not qty:
+            continue
+        it = {"msku": msku, "quantity": int(qty)}
+        for f in ("units_per_box", "boxes", "l_in", "w_in", "h_in", "weight_lb"):
+            ci = best_map.get(f)
+            it[f] = _num(row[ci]) if ci is not None else None
+        items.append(it)
+    if not items:
+        raise RuntimeError("补仓计划没有有效明细行")
+    return items
+
+
+def items_from_purchase_plan(db, plan_group_no):
+    """从赛狐采购计划取建仓明细（SKU+采购量）；箱规留空（建仓时从产品库补）。"""
+    from . import purchase_plan_service as pps
+    grp = pps._find_group(db, plan_group_no)
+    if grp is None:
+        raise RuntimeError(f"采购计划 {plan_group_no} 未找到")
+    items = []
+    for it in grp.get("purchasePlanItemVoList") or []:
+        msku = str(it.get("msku") or it.get("sku") or "").strip()
+        qty = _num(it.get("planNum"))
+        if not msku or not qty:
+            continue
+        items.append({"msku": msku, "quantity": int(qty),
+                      "units_per_box": _num(it.get("cartonQty")),
+                      "boxes": _num(it.get("cartonNum")),
+                      "l_in": None, "w_in": None, "h_in": None, "weight_lb": None})
+    brand_name = ""
+    for it in grp.get("purchasePlanItemVoList") or []:
+        if it.get("brandName"):
+            brand_name = it["brandName"]
+            break
+    return {"items": items, "brand_name": brand_name,
+            "name": _norm_plan_name(grp)}
+
+
+def _norm_plan_name(grp):
+    its = grp.get("purchasePlanItemVoList") or []
+    shop = (its[0].get("shopName") if its else "") or ""
+    site = (its[0].get("siteName") if its else "") or ""
+    return f"{shop or grp.get('planGroupNo','')}-{site}".strip("-")
 
 
 # ---------------------------------------------------------------- 建仓步骤

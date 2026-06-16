@@ -58,6 +58,7 @@
     <h2>批次管理</h2>
     <div class="head-ops">
       <a class="link sync-alt-link" tabindex="0" @click="openExcel()" @keydown.enter="openExcel()">或导入发货单 Excel</a>
+      <button class="btn" @click="openInbound">🏗️ 建仓</button>
       <button class="btn primary" @click="openSync">＋ 同步新批次</button>
     </div>
   </div>
@@ -90,6 +91,32 @@
       <div class="empty-sub">从赛狐选择一个采购计划，三步确认配对发货数据后导入为新批次，即可一键生成发货文件。</div>
       <button class="btn primary" @click="openSync">＋ 同步新批次</button>
     </div>
+  </div>
+
+  <!-- 建仓记录 -->
+  <div class="card" v-if="ibList.length">
+    <div class="modal-sub">🏗️ 建仓记录（亚马逊 FBA 入库计划）—— 上传补仓计划 Excel 或从赛狐拉取采购，分仓后得到目的仓 FC。</div>
+    <table class="table">
+      <thead><tr>
+        <th>名称</th><th>来源</th><th>亚马逊计划号</th><th>状态</th><th>目的仓</th><th>创建时间</th><th class="op"></th>
+      </tr></thead>
+      <tbody>
+        <tr v-for="r in ibList" :key="r.id">
+          <td>{{r.name || '-'}}</td>
+          <td>{{ {excel:'补仓Excel', plan:'赛狐采购', manual:'手动'}[r.source_type] || r.source_type }}</td>
+          <td class="mono">{{r.amazon_inbound_plan_id || '-'}}</td>
+          <td><span class="badge" :class="ibStatusCls(r.status)">{{r.status}}</span></td>
+          <td>
+            <span v-for="(s,si) in ((r.shipments && r.shipments.shipments) || [])" :key="si" class="chip mono">{{s.fc}}</span>
+            <span v-if="!(r.shipments && r.shipments.shipments && r.shipments.shipments.length)" class="muted">—</span>
+          </td>
+          <td class="muted">{{r.created_at}}</td>
+          <td class="op">
+            <button v-if="r.status!=='已取消'" class="icon-action" title="取消建仓" @click="ibCancelRec(r)">🗑️</button>
+          </td>
+        </tr>
+      </tbody>
+    </table>
   </div>
 
   <!-- 采购计划多步确认向导 -->
@@ -290,6 +317,145 @@
       <span class="up-main">{{excelBusy ? '导入中…' : '点击上传发货单 Excel'}}</span>
       <span class="up-sub">支持 .xlsx / .xls</span>
     </label>
+  </modal>
+
+  <!-- 建仓向导 -->
+  <modal v-if="ibOpen" title="建仓 — 亚马逊 FBA 入库计划" size="xl" @close="ibClose">
+    <div class="steps">
+      <div v-for="(s,i) in ['选来源','核对明细','执行 & 选仓','完成']" :key="i"
+           class="step" :class="{active: ibStep===i+1, done: ibStep>i+1}">
+        <span class="step-num">{{ibStep>i+1 ? '✓' : i+1}}</span>
+        <span class="step-label">{{s}}</span>
+      </div>
+    </div>
+
+    <!-- 步骤1 选来源 -->
+    <div v-show="ibStep===1" class="wiz-pane">
+      <div class="modal-sub">建仓数据来源（二选一）：上传补仓计划 Excel，或从赛狐采购计划拉取。</div>
+      <div class="src-cards">
+        <div class="src-card" :class="{on: ibSource==='excel'}">
+          <div class="src-ico">📤</div>
+          <div class="src-title">上传补仓计划 Excel</div>
+          <div class="src-sub">表头需含 AMAZON-SKU、补仓数量、每箱商品数、外箱数、长/宽/高(in)、重(lb)</div>
+          <label class="btn sm" :class="{loading: ibBusy}">
+            选择文件<input type="file" accept=".xlsx,.xls" hidden :disabled="ibBusy" @change="ibParseExcel">
+          </label>
+        </div>
+        <div class="src-card" :class="{on: ibSource==='plan'}" @click="ibChooseSource('plan')">
+          <div class="src-ico">🗂️</div>
+          <div class="src-title">从赛狐拉取采购</div>
+          <div class="src-sub">选一个采购计划，取其 SKU + 采购量；箱规自动从产品库补</div>
+          <button class="btn sm" @click.stop="ibChooseSource('plan')">浏览采购计划</button>
+        </div>
+      </div>
+
+      <div v-if="ibSource==='plan'" class="ib-plan-list">
+        <div v-if="ibPlansLoading" class="empty">正在拉取采购计划…</div>
+        <template v-else-if="ibPlans.length">
+          <div class="plan-list">
+            <div v-for="p in ibPlans" :key="p.plan_group_no" class="plan-card pick" tabindex="0"
+                 @click="ibPickPlan(p)" @keydown.enter="ibPickPlan(p)">
+              <div class="plan-pick-body">
+                <div class="plan-name">📋 {{p.plan_group_no}}
+                  <span class="badge" :class="planStatusCls(p.status_label)">{{p.status_label || '—'}}</span>
+                  <span class="badge b-blue">计划 {{num(p.plan_total_num)}}</span>
+                  <span class="muted">📦 {{num(p.item_count)}} SKU</span>
+                </div>
+                <div class="plan-meta"><span>👤 {{p.create_name||'-'}}</span><span>🕐 {{p.create_time||'-'}}</span></div>
+              </div>
+            </div>
+          </div>
+        </template>
+        <div v-else class="empty">没有采购计划</div>
+      </div>
+    </div>
+
+    <!-- 步骤2 核对明细 -->
+    <div v-show="ibStep===2" class="wiz-pane">
+      <div class="modal-sub">核对建仓明细（箱规留空的会从产品库自动补；可手动改）。</div>
+      <div class="ib-meta-row">
+        <div class="field"><label>计划名称</label><input v-model="ibName" placeholder="如 HUHOLE-US-2026.5.29"></div>
+        <div class="field"><label>品牌 / 店铺</label>
+          <select v-model="ibBrandId">
+            <option value="">默认店 (main)</option>
+            <option v-for="b in ibBrands" :key="b.id" :value="b.id">{{b.name}}<template v-if="b.amazon_store"> · {{b.amazon_store}}</template></option>
+          </select>
+        </div>
+      </div>
+      <div class="table-wrap">
+        <table class="table sub">
+          <thead><tr>
+            <th>AMAZON-SKU</th><th class="num">数量</th><th class="num">每箱数</th><th class="num">外箱数</th>
+            <th class="num">长(in)</th><th class="num">宽(in)</th><th class="num">高(in)</th><th class="num">重(lb)</th><th class="op"></th>
+          </tr></thead>
+          <tbody>
+            <tr v-for="(it,ix) in ibItems" :key="ix">
+              <td><input class="cell wide" v-model="it.msku"></td>
+              <td><input class="cell" type="number" v-model.number="it.quantity"></td>
+              <td><input class="cell" type="number" v-model.number="it.units_per_box"></td>
+              <td><input class="cell" type="number" v-model.number="it.boxes"></td>
+              <td><input class="cell" type="number" v-model.number="it.l_in"></td>
+              <td><input class="cell" type="number" v-model.number="it.w_in"></td>
+              <td><input class="cell" type="number" v-model.number="it.h_in"></td>
+              <td><input class="cell" type="number" v-model.number="it.weight_lb"></td>
+              <td class="op"><button class="icon-action" @click="ibDelRow(ix)">🗑️</button></td>
+            </tr>
+            <tr v-if="!ibItems.length"><td colspan="9" class="empty">无明细，点下方加一行</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <button class="btn sm" @click="ibAddRow">＋ 加一行</button>
+    </div>
+
+    <!-- 步骤3 执行 & 选仓 -->
+    <div v-show="ibStep===3" class="wiz-pane">
+      <div v-if="ibProgress" class="banner">
+        <div class="banner-title">⏳ {{ibProgress}}</div>
+        <div class="banner-line"><span class="dot"></span><span class="banner-msg">建仓为亚马逊异步流程，请勿关闭弹窗。</span></div>
+      </div>
+      <template v-if="ibPlacements.length">
+        <div class="banner ok"><div class="banner-title">✓ 分仓方案已生成，选一个目的仓方案确认（费用低者优先）</div></div>
+        <div class="plan-list">
+          <div v-for="o in ibPlacements" :key="o.placement_option_id" class="plan-card pick"
+               :class="{picked: ibChosen===o.placement_option_id}" tabindex="0"
+               @click="ibChosen=o.placement_option_id" @keydown.enter="ibChosen=o.placement_option_id">
+            <div class="plan-pick-body">
+              <div class="plan-name">
+                <span class="pick-radio" :class="{on: ibChosen===o.placement_option_id}"></span>
+                {{o.shipment_count}} 个仓
+                <span class="badge" :class="o.fees>0 ? 'b-orange' : 'b-green'">费用 {{money(o.fees)}}</span>
+              </div>
+              <div class="plan-meta">
+                <span v-for="(s,si) in o.shipments" :key="si" class="chip mono">{{s.fc}}（{{s.city}},{{s.state}}）</span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </template>
+    </div>
+
+    <!-- 步骤4 完成 -->
+    <div v-show="ibStep===4" class="wiz-pane">
+      <div class="empty-state">
+        <div class="empty-ico">✅</div>
+        <div class="empty-title">建仓完成</div>
+        <div class="empty-sub">亚马逊入库计划 <b class="mono">{{ibRec && ibRec.amazon_inbound_plan_id}}</b> 已分仓生成货件。</div>
+        <div class="plan-meta" v-if="ibRec && ibRec.shipments && ibRec.shipments.shipments">
+          <span v-for="(s,si) in ibRec.shipments.shipments" :key="si" class="chip mono">{{s.fc}} · {{s.confirmationId || s.shipmentId}}</span>
+        </div>
+      </div>
+    </div>
+
+    <template #foot>
+      <span class="flex-1"></span>
+      <button v-if="ibStep===2" class="btn primary" :class="{loading: ibBusy}" :disabled="ibBusy || !ibItems.length" @click="ibStartBuild">
+        开始建仓 →
+      </button>
+      <button v-else-if="ibStep===3 && ibPlacements.length" class="btn primary" :class="{loading: ibBusy}" :disabled="ibBusy || !ibChosen" @click="ibChoose">
+        确认分仓（生成货件）
+      </button>
+      <button v-else-if="ibStep===4" class="btn primary" @click="ibClose">完成</button>
+    </template>
   </modal>
 </div>
 </template>

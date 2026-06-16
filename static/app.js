@@ -156,6 +156,12 @@ const PageBatches = {
       importing: false,
       // 离线 Excel 导入
       excelOpen: false, excelBusy: false,
+      // 建仓向导
+      ibOpen: false, ibStep: 1, ibSource: '', ibBusy: false,
+      ibItems: [], ibBrandId: '', ibName: '', ibBrands: [],
+      ibRec: null, ibProgress: '', ibPlacements: [], ibChosen: '',
+      ibPlans: [], ibPlansLoading: false,
+      ibList: [], ibListLoading: false,
     };
   },
   async mounted() {
@@ -163,6 +169,7 @@ const PageBatches = {
     catch (e) { toast('加载批次失败：' + e.message, 'err'); }
     this.batches.sort((a, b) => (b.id || 0) - (a.id || 0));
     this.loading = false;
+    this.loadInboundList();
   },
   methods: {
     scoreCls(s) { const n = Number(s); return n >= 80 ? 'b-green' : (n >= 50 ? 'b-orange' : 'grey'); },
@@ -270,6 +277,103 @@ const PageBatches = {
         if (bid) location.hash = '#batches/' + bid;
       } catch (e) { toast('导入失败：' + e.message, 'err'); }
       finally { this.excelBusy = false; if (ev.target) ev.target.value = ''; }
+    },
+
+    /* ---- 建仓向导 ---- */
+    async loadInboundList() {
+      this.ibListLoading = true;
+      try { const r = await api('/inbound/plans') || {}; this.ibList = r.plans || []; }
+      catch (e) { this.ibList = []; }
+      this.ibListLoading = false;
+    },
+    async openInbound() {
+      this.ibOpen = true; this.ibStep = 1; this.ibSource = ''; this.ibItems = [];
+      this.ibBrandId = ''; this.ibName = ''; this.ibRec = null;
+      this.ibPlacements = []; this.ibChosen = ''; this.ibProgress = ''; this.ibPlans = [];
+      if (!this.ibBrands.length) { try { this.ibBrands = (await api('/brands')) || []; } catch (e) {} }
+    },
+    ibClose() { if (this.ibBusy) return; this.ibOpen = false; },
+    ibChooseSource(src) { this.ibSource = src; if (src === 'plan') this.ibLoadPlans(); },
+    async ibParseExcel(ev) {
+      const f = ev.target && ev.target.files && ev.target.files[0];
+      if (!f) return;
+      this.ibBusy = true;
+      try {
+        const fd = new FormData(); fd.append('file', f);
+        const r = await api('/inbound/parse-excel', { method: 'POST', body: fd });
+        this.ibItems = (r.items || []).map(it => ({ ...it }));
+        this.ibSource = 'excel'; this.ibStep = 2;
+        toast('解析出 ' + this.ibItems.length + ' 行明细');
+      } catch (e) { toast('解析失败：' + e.message, 'err'); }
+      finally { this.ibBusy = false; if (ev.target) ev.target.value = ''; }
+    },
+    async ibLoadPlans() {
+      this.ibPlansLoading = true;
+      try { const r = await api('/sync/purchase-plans?page=1') || {}; this.ibPlans = r.plans || []; }
+      catch (e) { toast('拉取采购计划失败：' + e.message, 'err'); this.ibPlans = []; }
+      this.ibPlansLoading = false;
+    },
+    async ibPickPlan(p) {
+      this.ibBusy = true;
+      try {
+        const r = await api('/inbound/from-purchase-plan/' + encodeURIComponent(p.plan_group_no)) || {};
+        this.ibItems = (r.items || []).map(it => ({ ...it }));
+        this.ibName = r.name || p.plan_group_no; this.ibSource = 'plan';
+        if (r.brand_name) {
+          const b = this.ibBrands.find(x => (x.name || '').toLowerCase() === r.brand_name.toLowerCase());
+          if (b) this.ibBrandId = b.id;
+        }
+        this.ibStep = 2;
+      } catch (e) { toast('取明细失败：' + e.message, 'err'); }
+      this.ibBusy = false;
+    },
+    ibAddRow() { this.ibItems.push({ msku: '', quantity: null, units_per_box: null, boxes: null, l_in: null, w_in: null, h_in: null, weight_lb: null }); },
+    ibDelRow(i) { this.ibItems.splice(i, 1); },
+    async ibStartBuild() {
+      const items = this.ibItems.filter(it => it.msku && it.quantity > 0);
+      if (!items.length) { toast('请先填写有效明细（SKU + 数量）', 'err'); return; }
+      this.ibBusy = true; this.ibStep = 3; this.ibProgress = '① 创建入库计划…';
+      try {
+        const r = await api('/inbound/create', {
+          method: 'POST',
+          body: { brand_id: this.ibBrandId || null, items, source_type: this.ibSource || 'manual', name: this.ibName || '' },
+        });
+        this.ibRec = r;
+        this.ibProgress = '② 生成并确认装箱方案…';
+        await api('/inbound/plans/' + r.id + '/packing', { method: 'POST' });
+        this.ibProgress = '③ 提交箱规…';
+        await api('/inbound/plans/' + r.id + '/boxes', { method: 'POST' });
+        this.ibProgress = '④ 生成分仓方案（亚马逊计算，较慢，请耐心等待）…';
+        await api('/inbound/plans/' + r.id + '/placement', { method: 'POST' });
+        this.ibProgress = '⑤ 获取目的仓方案…';
+        await this.ibLoadPlacements();
+        this.ibProgress = '';
+        this.loadInboundList();
+      } catch (e) { this.ibProgress = ''; toast('建仓失败：' + e.message, 'err'); }
+      this.ibBusy = false;
+    },
+    async ibLoadPlacements() {
+      const r = await api('/inbound/plans/' + this.ibRec.id + '/placements') || {};
+      this.ibPlacements = (r.placement_options || []).sort((a, b) => (a.fees || 0) - (b.fees || 0));
+      this.ibChosen = '';
+    },
+    async ibChoose() {
+      if (!this.ibChosen) { toast('请选择一个目的仓方案', 'err'); return; }
+      if (!confirm('确认该分仓方案？将在亚马逊正式生成货件。')) return;
+      this.ibBusy = true;
+      try {
+        const r = await api('/inbound/plans/' + this.ibRec.id + '/choose', { method: 'POST', body: { placement_option_id: this.ibChosen } });
+        this.ibRec = r; toast('建仓完成 → 分仓已确认'); this.loadInboundList(); this.ibStep = 4;
+      } catch (e) { toast('确认分仓失败：' + e.message, 'err'); }
+      this.ibBusy = false;
+    },
+    async ibCancelRec(rec) {
+      if (!confirm('取消建仓「' + (rec.name || rec.amazon_inbound_plan_id) + '」？将作废亚马逊入库计划。')) return;
+      try { await api('/inbound/plans/' + rec.id + '/cancel', { method: 'POST' }); toast('已取消'); this.loadInboundList(); }
+      catch (e) { toast('取消失败：' + e.message, 'err'); }
+    },
+    ibStatusCls(s) {
+      return { '分仓已确认': 'b-green', '分仓方案已生成': 'b-blue', '已取消': 'grey', '失败': 'red' }[s] || 'b-orange';
     },
 
     async del(b) {

@@ -932,3 +932,14 @@ input[type="checkbox"] { accent-color: var(--primary); }
 
 /* 修复：.table th 的 left 特异性高于 .num，导致数字列表头不右对齐、与数据错位 */
 .table th.num { text-align: right; }
+
+/* 建仓向导 — 来源卡片 / 明细 */
+.src-cards{display:flex;gap:14px;margin:10px 0}
+.src-card{flex:1;border:1px solid var(--border-soft);border-radius:10px;padding:16px;text-align:center;transition:.15s}
+.src-card.on{border-color:var(--primary);box-shadow:0 0 0 2px var(--primary-light)}
+.src-ico{font-size:28px}
+.src-title{font-weight:600;margin:6px 0 4px;color:var(--text-heading)}
+.src-sub{font-size:12px;color:#6B7280;margin-bottom:10px;line-height:1.5}
+.ib-plan-list{margin-top:6px;max-height:340px;overflow:auto}
+.ib-meta-row{display:flex;gap:14px;margin-bottom:10px}
+.ib-meta-row .field{flex:1}
