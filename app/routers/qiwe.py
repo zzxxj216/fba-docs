@@ -6,6 +6,7 @@ from sqlalchemy.orm import Session
 from ..database import get_db
 from ..models import Forwarder, ForwarderMessage
 from ..services import forwarder_service as fs
+from ..services import inquiry_service
 
 router = APIRouter()
 
@@ -43,7 +44,8 @@ async def qiwe_callback(request: Request, db: Session = Depends(get_db)):
     except Exception:
         payload = {}
     try:
-        res = fs.record_incoming(db, payload)
+        # 用 inquiry_service：落库 + 对每条 in 消息自动归属到对的询价（多批次隔离）
+        res = inquiry_service.record_incoming(db, payload)
     except Exception as e:               # 落库失败也别让平台疯狂重推
         return {"code": 0, "stored": False, "error": str(e)[:200]}
     return {"code": 0, **res}
