@@ -6,7 +6,8 @@ from fastapi.staticfiles import StaticFiles
 from sqlalchemy import text
 
 from .database import BASE_DIR, Base, engine
-from .routers import batches, crud, generate, inbound, purchase, qiwe, sync, templates
+from . import feishu_models  # noqa: F401  注册飞书线表（Operator/FeishuSession）到 Base
+from .routers import batches, crud, feishu, generate, inbound, purchase, qiwe, sync, templates
 
 Base.metadata.create_all(bind=engine)
 
@@ -59,6 +60,7 @@ app.include_router(generate.router, prefix="/api")
 app.include_router(purchase.router, prefix="/api")
 app.include_router(inbound.router, prefix="/api")
 app.include_router(qiwe.router, prefix="/api")
+app.include_router(feishu.router, prefix="/api")
 app.include_router(crud.router, prefix="/api")
 
 app.mount("/", StaticFiles(directory=os.path.join(BASE_DIR, "static"), html=True), name="static")
