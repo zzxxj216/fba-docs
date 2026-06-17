@@ -324,9 +324,13 @@ class Inquiry(Base):
     __tablename__ = "inquiries"
     id = Column(Integer, primary_key=True)
     batch_id = Column(Integer, ForeignKey("batches.id"), nullable=False, index=True)
+    ref_code = Column(String(64), default="", index=True)  # 人读暗号 INQ-HUH0619-1，埋进正文便于归属
     status = Column(String(16), default="待发送")  # 待发送/已发送/收集中/已选货代/已取消
+    channel = Column(String(8), default="")         # room=群 / private=私聊（多为群）
     content = Column(Text)                          # 发出的询价正文（起草确认后定稿）
     structured = Column(Text)                       # JSON 结构化询价要素（FC/箱数/体积/重量/品名…）
+    # 分仓后目的仓清单 JSON：[{fc, boxes, volume_cbm, weight_kg, skus}]，报全校验与对账的基准
+    lanes_snapshot = Column(Text)
     target_forwarder_ids = Column(Text)             # JSON list[int]，本次询的货代
     chosen_quote_id = Column(Integer)               # 拍板选中的 InquiryQuote.id
     created_at = Column(DateTime, default=datetime.now)
@@ -339,14 +343,17 @@ class InquiryQuote(Base):
     id = Column(Integer, primary_key=True)
     inquiry_id = Column(Integer, ForeignKey("inquiries.id"), nullable=False, index=True)
     forwarder_id = Column(Integer, ForeignKey("forwarders.id"), index=True)
+    source_type = Column(String(8), default="text")   # text=文字报价 / image=图片报价
     raw_message = Column(Text)             # 提取所依据的原文（往返拼接）
-    price = Column(Float)                   # 头程报价
+    raw_image_path = Column(String(512), default="")  # 图片报价的本地原图路径
+    price = Column(Float)                   # 头程报价（整份的代表价/一口价，逐仓价在 QuoteLine）
     currency = Column(String(8), default="CNY")
     unit = Column(String(16), default="")  # 计价单位（/kg、/票、/方…）
     channel = Column(String(64), default="")   # 渠道（空运/海运/快递…）
     eta_days = Column(Integer)             # 时效（天）
     cutoff = Column(String(64), default="")    # 截关/截单
     valid_until = Column(String(32), default="")  # 报价有效期
+    customs_fee_monthly = Column(Float)    # 月度固定报关费（整包总价用，整份一笔）
     attachments = Column(Text)             # JSON 附件信息
     extract_confidence = Column(Float)     # 0~1 提取置信度
     is_chosen = Column(Boolean, default=False)
@@ -354,6 +361,30 @@ class InquiryQuote(Base):
     updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
 
     forwarder = relationship("Forwarder")
+    lines = relationship("QuoteLine", back_populates="quote",
+                         cascade="all, delete-orphan", order_by="QuoteLine.id")
+
+
+class QuoteLine(Base):
+    """报价明细行（按目的仓 FC）。一份报价可能逐仓多行，或一口价一行（fc 空/'ALL'）。
+
+    覆盖校验 = Inquiry.lanes 的 FC 集合 − Σ QuoteLine.fc。
+    """
+    __tablename__ = "quote_lines"
+    id = Column(Integer, primary_key=True)
+    quote_id = Column(Integer, ForeignKey("inquiry_quotes.id"), nullable=False, index=True)
+    fc = Column(String(16), default="")        # 目的仓代码 ONT8/LAX9…；空或 ALL=一口价覆盖全部
+    price = Column(Float)                       # 运费单价（按 unit 计）
+    currency = Column(String(8), default="CNY")
+    unit = Column(String(16), default="/kg")   # /kg、/cbm(方)、/票…
+    channel = Column(String(64), default="")    # 渠道（空运/海运/快递…）
+    eta_days = Column(Integer)                  # 时效（天）
+    cutoff = Column(String(64), default="")     # 截关/截单
+    min_charge = Column(Float)                  # 起送费/最低收费
+    remark = Column(String(255), default="")
+    created_at = Column(DateTime, default=datetime.now)
+
+    quote = relationship("InquiryQuote", back_populates="lines")
 
 
 class ForwarderMessage(Base):
@@ -368,6 +399,9 @@ class ForwarderMessage(Base):
     media = Column(Text)                            # JSON 媒体/附件
     msg_type = Column(String(16), default="text")  # text/image/file/link…
     qiwe_msg_id = Column(String(64), default="", index=True)  # 平台消息id，幂等去重
+    # 归属状态：auto=自动归属/manual=人工指派/pending=待人工归属/none=非询价相关或无开放询价
+    attribution_status = Column(String(8), default="")
+    reply_to_msg_id = Column(String(64), default="")  # 引用的我方原消息 qiwe_msg_id（最强归属信号）
     raw = Column(Text)                              # 原始 webhook/发送 payload（调试+解析迭代）
     ts = Column(DateTime, default=datetime.now)     # 消息时间
     created_at = Column(DateTime, default=datetime.now)

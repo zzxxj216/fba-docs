@@ -19,7 +19,12 @@ DB_URL = os.getenv(
 
 
 def _ensure_database():
-    """库不存在时自动创建（连到 server 级再建库）。"""
+    """库不存在时自动创建（连到 server 级再建库）。
+
+    仅 MySQL 需要——SQLite（测试用内存/文件库）会自动建库，跳过避免跑 MySQL DDL 报错。
+    """
+    if not DB_URL.startswith("mysql"):
+        return
     server_url, _, db_part = DB_URL.rpartition("/")
     db_name = db_part.split("?")[0]
     tmp = create_engine(server_url, pool_pre_ping=True)
