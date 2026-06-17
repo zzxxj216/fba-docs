@@ -136,6 +136,15 @@ class Forwarder(Base):
     contact = Column(String(64), default="")
     phone = Column(String(64), default="")
     remark = Column(Text)
+    # 企微沟通渠道（qiweapi）：发消息按 told→外部联系人 或 room→群
+    qiwe_external_userid = Column(String(128), default="")  # 货代外部联系人 id（私聊询价）
+    qiwe_room_id = Column(String(128), default="")          # 群 id（群里询价）
+    qiwe_guid = Column(String(64), default="")              # 指定实例 guid（空=用 QIWE_GUID 默认）
+    # 询价绑定：按品牌（用户选定维度）。bind_brand_id 命中的品牌建仓后默认询这家；
+    # is_default=该品牌缺绑定时的兜底货代。多家比价时取该品牌全部绑定货代。
+    bind_brand_id = Column(Integer, ForeignKey("brands.id"))
+    is_default = Column(Boolean, default=False)
+    active = Column(Boolean, default=True)
 
 
 class Template(Base):
@@ -304,6 +313,64 @@ class InboundPlan(Base):
     updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
 
     brand = relationship("Brand")
+
+
+# ---------------------------------------------------------------- 货代沟通（询价/比价）
+# 设计见 AGENT_FORWARDER.md。建仓产出 FC/箱数/体积 → 起草询价 → 企微发多家 →
+# webhook 收回复落 ForwarderMessage → Claude 提取成 InquiryQuote → 多家比价人工选。
+
+class Inquiry(Base):
+    """一次询价（一个批次发起，可面向多家货代比价）。"""
+    __tablename__ = "inquiries"
+    id = Column(Integer, primary_key=True)
+    batch_id = Column(Integer, ForeignKey("batches.id"), nullable=False, index=True)
+    status = Column(String(16), default="待发送")  # 待发送/已发送/收集中/已选货代/已取消
+    content = Column(Text)                          # 发出的询价正文（起草确认后定稿）
+    structured = Column(Text)                       # JSON 结构化询价要素（FC/箱数/体积/重量/品名…）
+    target_forwarder_ids = Column(Text)             # JSON list[int]，本次询的货代
+    chosen_quote_id = Column(Integer)               # 拍板选中的 InquiryQuote.id
+    created_at = Column(DateTime, default=datetime.now)
+    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+
+
+class InquiryQuote(Base):
+    """某货代对某次询价的报价（Claude 从企微消息提取的结构化结果）。"""
+    __tablename__ = "inquiry_quotes"
+    id = Column(Integer, primary_key=True)
+    inquiry_id = Column(Integer, ForeignKey("inquiries.id"), nullable=False, index=True)
+    forwarder_id = Column(Integer, ForeignKey("forwarders.id"), index=True)
+    raw_message = Column(Text)             # 提取所依据的原文（往返拼接）
+    price = Column(Float)                   # 头程报价
+    currency = Column(String(8), default="CNY")
+    unit = Column(String(16), default="")  # 计价单位（/kg、/票、/方…）
+    channel = Column(String(64), default="")   # 渠道（空运/海运/快递…）
+    eta_days = Column(Integer)             # 时效（天）
+    cutoff = Column(String(64), default="")    # 截关/截单
+    valid_until = Column(String(32), default="")  # 报价有效期
+    attachments = Column(Text)             # JSON 附件信息
+    extract_confidence = Column(Float)     # 0~1 提取置信度
+    is_chosen = Column(Boolean, default=False)
+    created_at = Column(DateTime, default=datetime.now)
+    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+
+    forwarder = relationship("Forwarder")
+
+
+class ForwarderMessage(Base):
+    """货代沟通消息流水（沟通留痕 + 给 Claude 提取的上下文）。"""
+    __tablename__ = "forwarder_messages"
+    id = Column(Integer, primary_key=True)
+    forwarder_id = Column(Integer, ForeignKey("forwarders.id"), index=True)
+    inquiry_id = Column(Integer, ForeignKey("inquiries.id"), index=True)
+    batch_id = Column(Integer, ForeignKey("batches.id"), index=True)
+    direction = Column(String(4), default="in")   # in=货代来 / out=我方发
+    content = Column(Text)                          # 文本内容
+    media = Column(Text)                            # JSON 媒体/附件
+    msg_type = Column(String(16), default="text")  # text/image/file/link…
+    qiwe_msg_id = Column(String(64), default="", index=True)  # 平台消息id，幂等去重
+    raw = Column(Text)                              # 原始 webhook/发送 payload（调试+解析迭代）
+    ts = Column(DateTime, default=datetime.now)     # 消息时间
+    created_at = Column(DateTime, default=datetime.now)
 
 
 class GeneratedDoc(Base):

@@ -3,10 +3,37 @@ import os
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 
+from sqlalchemy import text
+
 from .database import BASE_DIR, Base, engine
-from .routers import batches, crud, generate, inbound, purchase, sync, templates
+from .routers import batches, crud, generate, inbound, purchase, qiwe, sync, templates
 
 Base.metadata.create_all(bind=engine)
+
+
+def _ensure_columns():
+    """create_all 只建缺失的表、不补已存在表的新列。这里幂等补列（货代企微/绑定字段）。"""
+    adds = {
+        "forwarders": [
+            ("qiwe_external_userid", "VARCHAR(128) DEFAULT ''"),
+            ("qiwe_room_id", "VARCHAR(128) DEFAULT ''"),
+            ("qiwe_guid", "VARCHAR(64) DEFAULT ''"),
+            ("bind_brand_id", "INT NULL"),
+            ("is_default", "TINYINT(1) DEFAULT 0"),
+            ("active", "TINYINT(1) DEFAULT 1"),
+        ],
+    }
+    with engine.begin() as conn:
+        for table, cols in adds.items():
+            existing = {r[0] for r in conn.execute(text(
+                "SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS "
+                "WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = :t"), {"t": table})}
+            for name, ddl in cols:
+                if name not in existing:
+                    conn.execute(text(f"ALTER TABLE `{table}` ADD COLUMN `{name}` {ddl}"))
+
+
+_ensure_columns()
 
 app = FastAPI(title="FBA 发货文件管理系统")
 
@@ -31,6 +58,7 @@ app.include_router(templates.router, prefix="/api")
 app.include_router(generate.router, prefix="/api")
 app.include_router(purchase.router, prefix="/api")
 app.include_router(inbound.router, prefix="/api")
+app.include_router(qiwe.router, prefix="/api")
 app.include_router(crud.router, prefix="/api")
 
 app.mount("/", StaticFiles(directory=os.path.join(BASE_DIR, "static"), html=True), name="static")
