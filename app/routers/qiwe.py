@@ -16,6 +16,21 @@ def qiwe_status():
     return fs.channel_status()
 
 
+@router.get("/qiwe/rooms")
+def qiwe_rooms():
+    """企微群列表（配货代群绑定时选 roomId）。"""
+    from .. import qiwe_client as qiwe
+    if not qiwe.configured():
+        raise HTTPException(400, "企微渠道未配置（缺 QIWE_TOKEN）")
+    try:
+        rooms = qiwe.list_rooms()
+    except RuntimeError as e:
+        raise HTTPException(502, str(e))
+    return [{"room_id": r.get("roomId"), "name": r.get("roomName"),
+             "owner_id": r.get("roomOwnerId"), "member_count": r.get("roomMemberCount")}
+            for r in rooms]
+
+
 @router.post("/qiwe/callback")
 async def qiwe_callback(request: Request, db: Session = Depends(get_db)):
     """qiweapi webhook 回调：货代消息进来 → 落库。容错解析，整段存 raw。

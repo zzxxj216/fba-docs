@@ -116,3 +116,14 @@ def send_text(to_id, content, guid=None, no_read=False):
         raise RuntimeError("缺少实例 guid（配 QIWE_GUID 或显式传入）")
     return call("/msg/sendText", {"guid": guid, "toId": to_id,
                                   "content": content, "isNoNeedRead": bool(no_read)})
+
+
+# ---------------------------------------------------------------- 已核对：查群
+
+def list_rooms(guid=None):
+    """群列表（roomId/roomName/群主/成员数）。配货代群绑定时取 roomId 用。"""
+    guid = guid or default_guid()
+    if not guid:
+        raise RuntimeError("缺少实例 guid（配 QIWE_GUID 或显式传入）")
+    r = call("/room/getRoomList", {"guid": guid}) or {}
+    return r.get("roomList", [])
