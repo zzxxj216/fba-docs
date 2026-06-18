@@ -11,6 +11,7 @@
 import io
 import json
 import math
+import re
 
 from openpyxl import load_workbook
 
@@ -430,17 +431,41 @@ def build_for_batch(db, batch):
 
     api_items = [{"msku": it["msku"], "quantity": it["quantity"],
                   "prep_owner": "SELLER", "label_owner": "SELLER"} for it in items]
-    try:
-        resp = fba.call("POST", "/inbound-plans", store=store, timeout=90,
+
+    def _create():
+        return fba.call("POST", "/inbound-plans", store=store, timeout=90,
                         json={"name": batch.name, "source_address": SOURCE_ADDRESS, "items": api_items})
-    except RuntimeError as e:
+
+    # 部分 SKU（无标/Amazon贴标）只接受 labelOwner/prepOwner=NONE：亚马逊逐条报
+    # "ERROR: <MSKU> does not require labelOwner ... Accepted values: [NONE]"。
+    # 据错误把对应 SKU 改成 NONE 重试（多个 SKU、label+prep 都可能，故循环几轮）。
+    resp = None
+    last_err = ""
+    for _ in range(3):
+        try:
+            resp = _create()
+            break
+        except RuntimeError as e:
+            last_err = str(e)
+            none_label = set(re.findall(r"ERROR:\s*(\S+)\s+does not require labelOwner", last_err))
+            none_prep = set(re.findall(r"ERROR:\s*(\S+)\s+does not require prepOwner", last_err))
+            changed = False
+            for ai in api_items:
+                if ai["msku"] in none_label and ai["label_owner"] != "NONE":
+                    ai["label_owner"] = "NONE"
+                    changed = True
+                if ai["msku"] in none_prep and ai["prep_owner"] != "NONE":
+                    ai["prep_owner"] = "NONE"
+                    changed = True
+            if not changed:                 # 不是可自动修的 owner 问题 → 停
+                break
+    if resp is None:
         acct = store or "main(默认)"
-        emsg = str(e)
-        if "not valid" in emsg or "MSKU" in emsg or "BadRequest" in emsg:
+        if "not valid" in last_err or "MSKU" in last_err or "BadRequest" in last_err:
             raise RuntimeError(
                 f"建仓账户=「{acct}」拒绝了这些 SKU（多半是该品牌没映射到正确的亚马逊账户）。"
-                f"请在「主体与品牌」给品牌设置 amazon_store、并确保该账户凭据已配进 mcapi。原始：{emsg[:160]}")
-        raise
+                f"请在「主体与品牌」给品牌设置 amazon_store、并确保该账户凭据已配进 mcapi。原始：{last_err[:200]}")
+        raise RuntimeError(last_err)
     pid = resp.get("inboundPlanId", "")
     if resp.get("operationId"):
         fba.wait_operation(resp["operationId"], store=store, timeout=120)

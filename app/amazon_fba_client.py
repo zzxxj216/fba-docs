@@ -51,7 +51,7 @@ def call(method, path, params=None, json=None, store=None, timeout=60):
     except httpx.HTTPError as e:
         raise RuntimeError(f"建仓服务(mcapi)连接失败：{e}（确认 mcapi 已在 {_base()} 运行）")
     if r.status_code >= 400:
-        raise RuntimeError(f"建仓服务 {path} 失败 HTTP {r.status_code}: {r.text[:300]}")
+        raise RuntimeError(f"建仓服务 {path} 失败 HTTP {r.status_code}: {r.text[:2000]}")
     try:
         body = r.json()
     except ValueError:
