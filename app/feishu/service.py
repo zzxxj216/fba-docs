@@ -12,7 +12,7 @@ import json
 
 from .. import feishu_client as fc
 from .. import llm_client
-from . import cards, intake
+from . import cards, intake, workspace
 from . import inquiry_port as port
 from ..models import Batch, Brand, Inquiry
 
@@ -295,7 +295,9 @@ def handle_action(db, *, chat_id, open_id, action, value):
     if action == "view_progress":
         return _act_progress(db, chat_id, open_id)
     if action == "confirm_purchase":
-        return _act_confirm_purchase(db, chat_id, value)
+        return _act_confirm_purchase(db, chat_id, open_id, value)
+    if action == "build":
+        return _act_build(db, chat_id, open_id, value)
     if action == "fill_data":
         return _act_fill_data(db, chat_id, batch_id)
     if action == "start_inquiry":
@@ -342,17 +344,138 @@ def _act_progress(db, chat_id, open_id):
             "action": "view_progress", "items": len(items)}
 
 
-def _act_confirm_purchase(db, chat_id, value):
-    """补货卡片【确认采购】→ 先显示下一步说明（真实写采购单待接入，关键动作不自动执行）。"""
-    pgn = (value or {}).get("plan_group_no") or "?"
-    body = (
-        f"**采购计划**：{pgn}\n\n"
-        "**下一步会做**：走现有采购确认流程 —— 在系统/赛狐对该计划确认采购、生成采购单（工厂下单）。\n"
-        "到货后回来发 **「建仓」**，把这批做成亚马逊入库计划、拿分仓目的仓，再进 **询价**。\n\n"
-        "⚠️ 「确认采购」会向赛狐写采购单，属关键动作 —— 真实执行待接入后由你在此一键确认。"
-    )
-    card = cards.text_card("下一步 · 确认采购", body, template="orange")
-    return {"card": card, "sent": _safe_send_card(chat_id, card), "action": "confirm_purchase"}
+def _btn_dict(text, action, value_extra=None, btn_type="default"):
+    """内联按钮 dict（service 里手动拼卡片用）。"""
+    v = {"action": action}
+    if value_extra:
+        v.update(value_extra)
+    return {"tag": "button", "text": {"tag": "plain_text", "content": text},
+            "type": btn_type, "value": v}
+
+
+def _act_confirm_purchase(db, chat_id, open_id, value):
+    """补货卡片【确认采购】→ 一键：工厂确认 → 生成采购单(赛狐到「待到货」) → 直接建仓 → 分仓方案。
+
+    每步写工作区(总览/概况/日志)；某步失败记错误、已成的不回滚，卡片如实显示进度。
+    """
+    pgn = (value or {}).get("plan_group_no")
+    if not pgn:
+        card = cards.text_card("确认采购", "缺计划号", template="red")
+        return {"card": card, "sent": _safe_send_card(chat_id, card), "action": "confirm_purchase"}
+    op = intake.identify_operator(db, open_id=open_id)
+    opname = (op.name if op else None) or "运营"
+    from ..services import purchase_order_service as pos
+    from ..services import purchase_plan_service as pps
+    from ..services import inbound_service
+
+    grp = pps._find_group(db, pgn)
+    if grp is None:
+        card = cards.text_card("确认采购", f"赛狐未找到采购计划 {pgn}（近 60 天）", template="red")
+        return {"card": card, "sent": _safe_send_card(chat_id, card), "action": "confirm_purchase"}
+    pitems = grp.get("purchasePlanItemVoList") or []
+    shop = next((p.get("shopName") for p in pitems if p.get("shopName")), "") or ""
+    sku_count = len(pitems)
+    qty = sum((p.get("planNum") or 0) for p in pitems)
+    workspace.record_plan(opname, pgn, shop=shop, sku_count=sku_count, qty=qty, stage="待采购")
+    steps = []
+
+    # 1) 工厂确认（本地）
+    try:
+        items = [{"sku": p.get("sku"), "commodity_name": p.get("commodityName"),
+                  "num": p.get("planNum"), "box_count": p.get("cartonNum")} for p in pitems]
+        pos.confirm_plan(db, pgn, items, confirmed_by=opname)
+        workspace.record_plan(opname, pgn, stage="已确认采购")
+        steps.append("✅ 工厂确认")
+    except Exception as e:
+        db.rollback()
+        workspace.log(opname, pgn, f"工厂确认失败：{e}", level="error", shop=shop)
+        card = cards.text_card("确认采购失败", f"工厂确认出错：{str(e)[:160]}", template="red")
+        return {"card": card, "sent": _safe_send_card(chat_id, card), "action": "confirm_purchase"}
+
+    # 2) 生成采购单 + 下单到「待到货」（赛狐写，action=2）
+    try:
+        pos.create_purchase_order(db, pgn, action="2", dry_run=False)
+        info = pos.get_confirm(db, pgn)
+        workspace.record_plan(opname, pgn, stage="采购单已生成",
+                              note=f"采购单 {info.get('purchase_no', '')} · {info.get('status', '')}")
+        steps.append(f"✅ 采购单已生成 → {info.get('status', '待到货')}（{info.get('purchase_no', '')}）")
+    except RuntimeError as e:
+        db.rollback()
+        workspace.log(opname, pgn, f"生成采购单失败：{e}", level="error", shop=shop)
+        steps.append(f"❌ 生成采购单失败：{str(e)[:140]}")
+        card = cards.text_card("确认采购 · 部分完成", "\n".join(steps), template="orange")
+        return {"card": card, "sent": _safe_send_card(chat_id, card), "action": "confirm_purchase"}
+
+    # 3) 直接建仓
+    try:
+        r = pps.import_plan_only(db, pgn)
+        batch = db.get(Batch, r["batch_id"]) if r else None
+        if batch is None:
+            raise RuntimeError("采购计划落批次失败")
+        inbound_service.build_for_batch(db, batch)
+        try:
+            opts = json.loads(batch.placement_options or "[]")
+        except (ValueError, TypeError):
+            opts = []
+        workspace.record_plan(opname, pgn, stage="已建仓", note=f"{len(opts)} 个分仓方案")
+        steps.append(f"✅ 建仓完成 → {len(opts)} 个分仓方案")
+        for i, o in enumerate(opts[:3], 1):
+            shs = o.get("shipments") or []
+            steps.append(f"　方案{i}：{len(shs)}仓　"
+                         + "、".join(f"{s.get('fc')}({s.get('boxes')}箱)" for s in shs[:6]))
+        card = cards.text_card("✅ 确认采购 + 建仓完成", "\n".join(steps), template="green")
+        return {"card": card, "sent": _safe_send_card(chat_id, card), "action": "confirm_purchase"}
+    except RuntimeError as e:
+        db.rollback()
+        workspace.log(opname, pgn, f"建仓失败：{e}", level="error", shop=shop)
+        steps.append(f"⚠️ 采购已到待到货；**建仓失败**：{str(e)[:160]}")
+        card = cards.text_card("确认采购完成 · 建仓待处理", "\n".join(steps), template="orange")
+        card["elements"].append({"tag": "action", "actions": [
+            _btn_dict("🏗️ 重试建仓", "build", {"plan_group_no": pgn}, "primary")]})
+        return {"card": card, "sent": _safe_send_card(chat_id, card), "action": "confirm_purchase"}
+
+
+def _act_build(db, chat_id, open_id, value):
+    """【(重试)建仓】→ 采购计划落批次 + build_for_batch → 分仓方案。写工作区。"""
+    value = value or {}
+    pgn = value.get("plan_group_no")
+    batch_id = value.get("batch_id")
+    op = intake.identify_operator(db, open_id=open_id)
+    opname = (op.name if op else None) or "运营"
+    from ..services import inbound_service
+    from ..services import purchase_plan_service as pps
+    try:
+        if batch_id is None and pgn:
+            r = pps.import_plan_only(db, pgn)
+            if not r:
+                card = cards.text_card("建仓", f"采购计划 {pgn} 未找到", template="red")
+                return {"card": card, "sent": _safe_send_card(chat_id, card), "action": "build"}
+            batch_id = r["batch_id"]
+        batch = db.get(Batch, batch_id)
+        if batch is None:
+            card = cards.text_card("建仓", "批次不存在", template="red")
+            return {"card": card, "sent": _safe_send_card(chat_id, card), "action": "build"}
+        inbound_service.build_for_batch(db, batch)
+    except RuntimeError as e:
+        db.rollback()
+        if pgn:
+            workspace.log(opname, pgn, f"建仓失败：{e}", level="error")
+        card = cards.text_card("建仓失败", str(e)[:220], template="red")
+        return {"card": card, "sent": _safe_send_card(chat_id, card), "action": "build"}
+    try:
+        opts = json.loads(batch.placement_options or "[]")
+    except (ValueError, TypeError):
+        opts = []
+    if pgn:
+        workspace.record_plan(opname, pgn, stage="已建仓", note=f"{len(opts)} 个分仓方案")
+    lines = [f"✅ **{batch.name}** 建仓完成，生成 **{len(opts)}** 个分仓方案："]
+    for i, o in enumerate(opts[:4], 1):
+        shs = o.get("shipments") or []
+        fcs = "、".join(f"{s.get('fc')}({s.get('boxes')}箱)" for s in shs[:8])
+        lines.append(f"**方案{i}**（{o.get('label', '')}）：{len(shs)}仓　{fcs}")
+    card = cards.text_card("建仓完成 · 分仓方案", "\n".join(lines), template="green")
+    return {"card": card, "sent": _safe_send_card(chat_id, card), "action": "build",
+            "batch_id": batch_id}
 
 
 def _act_fill_data(db, chat_id, batch_id):
