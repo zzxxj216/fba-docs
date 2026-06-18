@@ -414,6 +414,13 @@ def operation_status(rec_id, operation_id, store=None):
             "problems": op.get("operationProblems")}
 
 
+def _default_expiration():
+    """效期（YYYY-MM-DD）。部分 SKU（亚马逊标记需效期）建仓必须带，且亚马逊要求
+    效期 ≥ 今天+105 天（FBA_INB_0181）。面巾等长保质期商品取 +1 年，安全且合规。"""
+    from datetime import date, timedelta
+    return (date.today() + timedelta(days=365)).isoformat()
+
+
 def build_for_batch(db, batch):
     """直接给批次建仓（不走向导）：用批次明细跑 create→packing→boxes→placement，
     把分仓方案(含合仓)算好箱数/重量存到 batch.placement_options，并回填 inbound_plan_id。
@@ -439,16 +446,32 @@ def build_for_batch(db, batch):
     # 部分 SKU（无标/Amazon贴标）只接受 labelOwner/prepOwner=NONE：亚马逊逐条报
     # "ERROR: <MSKU> does not require labelOwner ... Accepted values: [NONE]"。
     # 据错误把对应 SKU 改成 NONE 重试（多个 SKU、label+prep 都可能，故循环几轮）。
+    # 校验既可能同步拒绝(create 502)，也可能异步失败(create 返回 operationId 后
+    # wait_operation FAILED，如效期)。故 create+wait 一起放进重试：据错误把 SKU 的
+    # labelOwner/prepOwner 改 NONE、或补效期(今天+1月)，再重试；重试前取消已建的草稿计划避免残留。
     resp = None
     last_err = ""
-    for _ in range(3):
+    for _ in range(4):
+        pid_try = None
         try:
-            resp = _create()
+            r = _create()
+            pid_try = r.get("inboundPlanId", "")
+            if r.get("operationId"):
+                fba.wait_operation(r["operationId"], store=store, timeout=120)
+            resp = r
             break
         except RuntimeError as e:
             last_err = str(e)
+            if pid_try:                       # 取消刚建但校验失败的草稿计划
+                try:
+                    fba.call("PUT", f"/inbound-plans/{pid_try}/cancel", store=store, timeout=60)
+                except Exception:
+                    pass
             none_label = set(re.findall(r"ERROR:\s*(\S+)\s+does not require labelOwner", last_err))
             none_prep = set(re.findall(r"ERROR:\s*(\S+)\s+does not require prepOwner", last_err))
+            # 需效期的 SKU：FBA_INB_0180 "resource '<MSKU>' ... Expiration date required"
+            need_exp = (set(re.findall(r"resource '([^']+)'", last_err))
+                        if "Expiration date required" in last_err else set())
             changed = False
             for ai in api_items:
                 if ai["msku"] in none_label and ai["label_owner"] != "NONE":
@@ -457,7 +480,10 @@ def build_for_batch(db, batch):
                 if ai["msku"] in none_prep and ai["prep_owner"] != "NONE":
                     ai["prep_owner"] = "NONE"
                     changed = True
-            if not changed:                 # 不是可自动修的 owner 问题 → 停
+                if ai["msku"] in need_exp and not ai.get("expiration"):
+                    ai["expiration"] = _default_expiration()   # 今天+1年(≥105天合规)
+                    changed = True
+            if not changed:                 # 不是可自动修的 owner/效期 问题 → 停
                 break
     if resp is None:
         acct = store or "main(默认)"
@@ -467,8 +493,6 @@ def build_for_batch(db, batch):
                 f"请在「主体与品牌」给品牌设置 amazon_store、并确保该账户凭据已配进 mcapi。原始：{last_err[:200]}")
         raise RuntimeError(last_err)
     pid = resp.get("inboundPlanId", "")
-    if resp.get("operationId"):
-        fba.wait_operation(resp["operationId"], store=store, timeout=120)
     batch.inbound_plan_id = pid
     db.commit()
 
@@ -480,13 +504,24 @@ def build_for_batch(db, batch):
     c = fba.call("POST", f"/inbound-plans/{pid}/packing-options/{po['packingOptionId']}/confirm", store=store)
     fba.wait_operation(c["operationId"], store=store)
 
+    # 箱内 item 必须与入库计划的 item 完全一致（labelOwner/prepOwner/expiration），
+    # 否则 set_packing_information 报 "did not contain expected items"。从最终 api_items 取。
+    owner_map = {}
+    for ai in api_items:
+        d = {"prepOwner": ai.get("prep_owner", "SELLER"),
+             "labelOwner": ai.get("label_owner", "SELLER")}
+        if ai.get("expiration"):
+            d["expiration"] = ai["expiration"]
+        owner_map[ai["msku"]] = d
+
     boxes = []
     for it in items:
         upb = it["units_per_box"]
         full, rem = divmod(it["quantity"], upb)
         dims = {"unitOfMeasurement": "IN", "length": it["l_in"], "width": it["w_in"], "height": it["h_in"]}
         wt = {"unit": "LB", "value": it["weight_lb"]}
-        line = {"msku": it["msku"], "prepOwner": "SELLER", "labelOwner": "SELLER"}
+        line = {"msku": it["msku"],
+                **owner_map.get(it["msku"], {"prepOwner": "SELLER", "labelOwner": "SELLER"})}
         if full > 0:
             boxes.append({"contentInformationSource": "BOX_CONTENT_PROVIDED",
                           "items": [dict(line, quantity=upb)], "dimensions": dims, "weight": wt, "quantity": full})
