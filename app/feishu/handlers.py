@@ -13,14 +13,36 @@
 路由层据此报"未接通"，不崩。
 """
 
+import collections
 import json
 import threading
 
 from .. import feishu_client as fc
 from ..database import SessionLocal
+from ..logging_config import get_logger
 from . import service
 
+logger = get_logger(__name__)
+
 _ws_thread = None
+
+# 去重：飞书长连接"至少投递一次"，处理慢会触发重推。按 message_id/事件键记已处理，
+# 重推的同一条直接跳过，避免机器人对一条消息反复回复（"自动推送"刷屏的根因）。
+_SEEN = collections.OrderedDict()
+_SEEN_LOCK = threading.Lock()
+
+
+def _seen_once(key):
+    """首次见到返回 False 并记录；已见过返回 True（应跳过）。容量上限自动淘汰。"""
+    if not key:
+        return False
+    with _SEEN_LOCK:
+        if key in _SEEN:
+            return True
+        _SEEN[key] = 1
+        while len(_SEEN) > 2000:
+            _SEEN.popitem(last=False)
+    return False
 
 
 # ---------------------------------------------------------------- 事件回调
@@ -44,38 +66,57 @@ def _extract_text(message):
     return ""
 
 
+def _process_message(chat_id, open_id, user_id, text):
+    """后台线程里真正处理（含 LLM/发送），不阻塞长连接 ACK。"""
+    db = SessionLocal()
+    try:
+        service.handle_message(db, chat_id=chat_id, open_id=open_id,
+                               user_id=user_id, text=text)
+    except Exception:
+        logger.exception("handle_message failed")
+    finally:
+        db.close()
+
+
 def on_message(data):
-    """im.message.receive_v1 处理：认人 + intake → 回待办卡片。机器人自身消息忽略。"""
+    """im.message.receive_v1：去重 + 立即返回，重活丢后台线程（避免飞书重推刷屏）。"""
     try:
         event = data.event
         message = event.message
         sender = event.sender
+        msg_id = getattr(message, "message_id", None)
         chat_id = message.chat_id
         open_id = getattr(getattr(sender, "sender_id", None), "open_id", None)
         user_id = getattr(getattr(sender, "sender_id", None), "user_id", None)
         text = _extract_text(message)
     except Exception:
         return
+    if _seen_once(msg_id):                      # 飞书重推的同一条 → 跳过
+        logger.info("dup message skipped msg_id=%s", msg_id)
+        return
+    logger.info("recv msg_id=%s open_id=%s text=%r", msg_id, open_id, text)
+    threading.Thread(target=_process_message, name="feishu-msg",
+                     args=(chat_id, open_id, user_id, text), daemon=True).start()
+
+
+def _process_action(chat_id, open_id, act, value):
+    """后台线程里执行按钮动作（含询价线调用/发卡片），不阻塞回调响应。"""
     db = SessionLocal()
     try:
-        service.handle_message(db, chat_id=chat_id, open_id=open_id,
-                               user_id=user_id, text=text)
+        service.handle_action(db, chat_id=chat_id, open_id=open_id,
+                              action=act, value=value)
     except Exception:
-        pass
+        logger.exception("handle_action failed")
     finally:
         db.close()
 
 
 def on_card_action(data):
-    """card.action.trigger 处理：按钮 value → service.handle_action。
-
-    需返回一个 toast/卡片更新响应；这里返回轻提示，真正的下一步卡片由 service 另发。
-    """
+    """card.action.trigger：去重 + 立即回 toast，动作丢后台线程。"""
     try:
         event = data.event
         action = event.action
         value = action.value or {}
-        # value 可能是 dict 或 JSON 串
         if isinstance(value, str):
             try:
                 value = json.loads(value)
@@ -84,20 +125,19 @@ def on_card_action(data):
         act = value.get("action", "")
         operator = getattr(event, "operator", None)
         open_id = getattr(operator, "open_id", None)
-        # card.action 事件里 chat 信息在 context
         ctx = getattr(event, "context", None)
         chat_id = getattr(ctx, "open_chat_id", None) if ctx else None
+        # 去重键：飞书回调有 token；没有就用 open_id+动作+批次/询价 兜底
+        token = getattr(event, "token", None)
+        key = "card:" + (token or f"{open_id}:{act}:{value.get('batch_id')}:{value.get('inquiry_id')}")
     except Exception:
         return _toast("处理失败")
-    db = SessionLocal()
-    try:
-        service.handle_action(db, chat_id=chat_id, open_id=open_id,
-                              action=act, value=value)
-    except Exception:
-        return _toast("处理失败")
-    finally:
-        db.close()
-    return _toast("已处理")
+    if _seen_once(key):
+        return _toast("已处理")
+    logger.info("card action=%s open_id=%s", act, open_id)
+    threading.Thread(target=_process_action, name="feishu-card",
+                     args=(chat_id, open_id, act, value), daemon=True).start()
+    return _toast("已收到，处理中…")
 
 
 def _toast(text):

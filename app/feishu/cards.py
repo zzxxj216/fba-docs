@@ -83,6 +83,121 @@ def todo_card(operator_name, todos):
             "elements": elements}
 
 
+def welcome_card(operator_name, shops):
+    """欢迎/认人卡片：我是谁 + 你是谁管哪些店 + 我能帮你做什么 + 怎么开始。"""
+    shop_str = "、".join(f"**{s}**" for s in shops) if shops else "（暂未配置管辖店铺）"
+    caps = (
+        "📦　**看本周补货**　— 拉赛狐待采购清单\n"
+        "🏗️　**建仓**　— 创建入库计划、拿分仓目的仓\n"
+        "🚢　**货代询价 / 比价 / 选货代**\n"
+        "📄　**生成 / 发送托书**\n"
+        "🔍　**查批次进度**"
+    )
+    return {
+        "config": {"wide_screen_mode": True},
+        "header": _header("👋 亚马逊发货管家", "blue"),
+        "elements": [
+            {"tag": "div", "text": {"tag": "lark_md",
+                "content": f"你好 **{operator_name}**！我是你的**亚马逊发货管家**。\n"
+                           f"你负责 {shop_str}，我帮你把货从**补货**一路管到**发货**。"}},
+            {"tag": "hr"},
+            {"tag": "div", "text": {"tag": "lark_md", "content": "**🛠 我能帮你做这些**"}},
+            {"tag": "div", "text": {"tag": "lark_md", "content": caps}},
+            {"tag": "hr"},
+            {"tag": "action", "actions": [
+                _btn("📦 查看本周补货", "restock", btn_type="primary"),
+                _btn("🔍 查看进度", "view_progress"),
+            ]},
+            {"tag": "note", "elements": [{"tag": "plain_text",
+                "content": "也可直接发「看本周补货」「建仓」「查进度」"}]},
+        ],
+    }
+
+
+def restock_card(operator_name, plans):
+    """本周补货卡片：赛狐待采购/待审核采购计划（已按管辖店铺过滤）。店铺分块、字段分行。
+
+    plans: list[dict]，每条:
+      {plan_group_no, status_label, shop_name, brand, item_count, total_qty, skus_sample}
+    """
+    # 按店铺分组：店铺当大标题，下面挂该店多个采购计划
+    by_shop = {}
+    for p in plans:
+        key = p.get("shop_name") or p.get("brand") or "—"
+        by_shop.setdefault(key, []).append(p)
+    head = {"tag": "div", "text": {"tag": "lark_md",
+            "content": f"**{operator_name}**，你管辖 **{len(by_shop)}** 个店铺、共 "
+                       f"**{len(plans)}** 个采购计划待处理："}}
+    if not plans:
+        return {"config": {"wide_screen_mode": True},
+                "header": _header("📦 本周补货 · 待采购", "blue"),
+                "elements": [head, {"tag": "div", "text": {"tag": "lark_md",
+                            "content": "✅ 暂无待采购 / 待审核的补货计划。"}}]}
+    status_tag = {"待采购": "<font color='orange'>● 待采购</font>",
+                  "待审核": "<font color='grey'>● 待审核</font>"}
+    elements = [head]
+    for shop, splans in by_shop.items():
+        elements.append({"tag": "hr"})
+        elements.append({"tag": "div", "text": {"tag": "lark_md",
+                        "content": f"🏪 **{shop}**　·　{len(splans)} 个采购计划"}})
+        for p in splans:
+            label = p.get("status_label", "")
+            tag = status_tag.get(label, label)
+            items = p.get("items") or []
+            lines = []
+            for it in items[:12]:
+                lines.append(f"　· `{it.get('sku')}`　**×{it.get('qty', 0)}**")
+            if len(items) > 12:
+                lines.append(f"　· …共 {len(items)} 个 SKU")
+            block = (
+                f"▸ **{p.get('plan_group_no')}**　{tag}　· {p.get('item_count', 0)} SKU · "
+                f"{p.get('total_qty', 0)} 件\n" + "\n".join(lines)
+            )
+            elements.append({"tag": "div", "text": {"tag": "lark_md", "content": block}})
+            if label == "待采购":
+                elements.append({"tag": "action", "actions": [
+                    _btn("✅ 确认采购", "confirm_purchase",
+                         {"plan_group_no": p.get("plan_group_no")}, btn_type="primary"),
+                ]})
+    elements.append({"tag": "hr"})
+    elements.append({"tag": "note", "elements": [{"tag": "plain_text",
+                    "content": "待采购可点【确认采购】；到货后发「建仓」进入下一步"}]})
+    return {"config": {"wide_screen_mode": True},
+            "header": _header("📦 本周补货 · 待采购", "blue"),
+            "elements": elements}
+
+
+def progress_card(operator_name, items):
+    """批次进度卡片：管辖店铺的批次 + 当前状态（建仓/询价等阶段）。
+
+    items: list[dict]，每条 {name, brand, status, batch_id}
+    """
+    head = {"tag": "div", "text": {"tag": "lark_md",
+            "content": f"**{operator_name}**，你管辖店铺共 **{len(items)}** 个批次："}}
+    if not items:
+        return {"config": {"wide_screen_mode": True},
+                "header": _header("🔍 批次进度", "turquoise"),
+                "elements": [head, {"tag": "div", "text": {"tag": "lark_md",
+                            "content": "暂无批次。"}}]}
+    status_tag = {
+        "数据准备": "<font color='grey'>● 数据准备</font>",
+        "已建仓": "<font color='green'>● 已建仓</font>",
+        "询价中": "<font color='orange'>● 询价中</font>",
+        "已选货代": "<font color='blue'>● 已选货代</font>",
+        "已完成": "<font color='green'>● 已完成</font>",
+    }
+    elements = [head]
+    for it in items:
+        tag = status_tag.get(it.get("status", ""), it.get("status", ""))
+        block = (f"📦 **{it.get('name') or ('批次#' + str(it.get('batch_id')))}**　{tag}\n"
+                 f"店铺：{it.get('brand', '')}")
+        elements.append({"tag": "hr"})
+        elements.append({"tag": "div", "text": {"tag": "lark_md", "content": block}})
+    return {"config": {"wide_screen_mode": True},
+            "header": _header("🔍 批次进度", "turquoise"),
+            "elements": elements}
+
+
 def inquiry_drafted_card(batch_name, inquiry_id, content, forwarder_names):
     """询价已起草卡片：展示待人工确认的正文 + 【确认群发】【取消】按钮。
 

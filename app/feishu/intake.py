@@ -15,8 +15,10 @@ from ..feishu_models import FeishuSession, Operator
 from ..models import Batch, Brand
 from ..services import batch_prep_service as prep
 
-# 视为"待办"的批次状态：尚未生成完文件、可能要建仓/询价的。
-PENDING_STATUSES = ("已同步", "已核对", "待投保")
+# 视为"待办"的批次状态（本系统真实状态）：
+#   数据准备 = 待体检/待建仓；已建仓 = 有分仓FC、待询价/选货代/发托书。
+# 都算"进行中待办"；真正完成（托书已发）后另立完成态再排除。
+PENDING_STATUSES = ("数据准备", "已建仓")
 
 
 def identify_operator(db, open_id=None, user_id=None):
