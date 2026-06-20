@@ -748,10 +748,12 @@ def _finish_generate(db, chat_id, batch, res, title):
         return {"card": card, "sent": _safe_send_card(chat_id, card), "blocked": True}
     gen = res.get("generated") or []
     errs = res.get("errors") or []
+    notes = res.get("notes") or []
     zpath = _deliver_docs(db, chat_id, batch, gen, title) if gen else None
     body = (f"✅ 已生成 **{len(gen)}** 个文件"
             + (f"，打包发群：`{os.path.basename(zpath)}`" if zpath else "") + "\n"
             + "\n".join(f"　📄 {g.get('filename')}" for g in gen[:10])
+            + (f"\nℹ️ {len(notes)} 处置空：" + "；".join(str(n)[:50] for n in notes[:3]) if notes else "")
             + (f"\n⚠️ {len(errs)} 个问题：" + "；".join(str(e)[:50] for e in errs[:3]) if errs else ""))
     card = cards.text_card(title, body, template="green" if gen else "orange")
     return {"card": card, "sent": _safe_send_card(chat_id, card), "generated": len(gen)}

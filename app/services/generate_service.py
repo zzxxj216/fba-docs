@@ -154,36 +154,31 @@ def generate(db, batch_id, template_ids):
         if gran == "shipment":
             for sp in batch.shipments:
                 if tmpl.requires_forwarder_no and not (sp.forwarder_order_no or "").strip():
-                    result["errors"].append(
+                    # 缺货代单号不再跳过：置空照出，仅留提示（回填单号后可重生）
+                    result.setdefault("notes", []).append(
                         f"模板「{tmpl.name}」：货件 {sp.fc_code or sp.amazon_shipment_id} "
-                        "缺货代单号，已跳过（回填后重新生成）")
-                    continue
-                out_dir = os.path.join(batch_dir, _safe_name(sp.fc_code or f"shipment-{sp.id}"))
+                        "无货代单号，已置空生成")
+                out_dir = os.path.join(batch_dir, _safe_name(tmpl.doc_type or tmpl.name))
                 _do_one(db, batch, tmpl, mapping, sp, out_dir, result)
         elif gran == "batch":
-            _do_one(db, batch, tmpl, mapping, None, batch_dir, result)
+            out_dir = os.path.join(batch_dir, _safe_name(tmpl.doc_type or tmpl.name))
+            _do_one(db, batch, tmpl, mapping, None, out_dir, result)
         elif gran == "row_per_shipment":
             # 单文件每货件一行；requires_forwarder_no 时过滤缺单号的货件
             ctx = build_context(db, batch)
             rows = ctx["shipments"]
             if tmpl.requires_forwarder_no:
-                # 按行自身的货件字段判断（rows 按 FC 排序，与 batch.shipments 的
-                # id 序不一致，不能 zip 对齐——否则会跳错货件）
-                kept = []
-                for row in rows:
-                    sprow = row.get("shipment") or {}
-                    if (sprow.get("forwarder_order_no") or "").strip():
-                        kept.append(row)
-                    else:
-                        result["errors"].append(
-                            f"模板「{tmpl.name}」：货件 "
-                            f"{sprow.get('fc_code') or sprow.get('amazon_shipment_id')} "
-                            "缺货代单号，该行已跳过")
-                rows = kept
+                # 缺货代单号不再剔除该行：置空照出，仅统计提示
+                blanks = sum(1 for row in rows
+                             if not ((row.get("shipment") or {}).get("forwarder_order_no") or "").strip())
+                if blanks:
+                    result.setdefault("notes", []).append(
+                        f"模板「{tmpl.name}」：{blanks} 个货件无货代单号，已置空生成")
             if not rows:
                 result["errors"].append(f"模板「{tmpl.name}」：没有可生成的货件行")
                 continue
-            _do_one(db, batch, tmpl, mapping, None, batch_dir, result,
+            out_dir = os.path.join(batch_dir, _safe_name(tmpl.doc_type or tmpl.name))
+            _do_one(db, batch, tmpl, mapping, None, out_dir, result,
                     rows_source={"shipments": rows})
         else:
             result["errors"].append(f"模板「{tmpl.name}」未知生成粒度 '{gran}'")
