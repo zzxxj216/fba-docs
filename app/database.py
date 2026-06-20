@@ -43,6 +43,31 @@ SessionLocal = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False
 Base = declarative_base()
 
 
+def _ensure_columns():
+    """给已存在的表补新增列（create_all 不改已有表）。幂等，MySQL 专用。"""
+    if not DB_URL.startswith("mysql"):
+        return
+    specs = [
+        ("templates", "company_id", "INT NULL"),
+        ("templates", "brand_id", "INT NULL"),
+    ]
+    try:
+        with engine.connect() as conn:
+            for table, col, ddl in specs:
+                has = conn.execute(text(
+                    "SELECT COUNT(*) FROM information_schema.COLUMNS WHERE "
+                    "TABLE_SCHEMA=DATABASE() AND TABLE_NAME=:t AND COLUMN_NAME=:c"),
+                    {"t": table, "c": col}).scalar()
+                if not has:
+                    conn.execute(text(f"ALTER TABLE `{table}` ADD COLUMN `{col}` {ddl}"))
+                    conn.commit()
+    except Exception:
+        pass  # 表还没建（fresh DB 由 create_all 带列建好）/无权限时静默
+
+
+_ensure_columns()
+
+
 def get_db():
     db = SessionLocal()
     try:

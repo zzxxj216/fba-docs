@@ -154,6 +154,11 @@ class Template(Base):
     name = Column(String(128), default="")
     owner_type = Column(String(16), default="forwarder")  # forwarder / internal
     forwarder_id = Column(Integer, ForeignKey("forwarders.id"))
+    # 模板分层 scope（按具体度解析：店铺 > 主体/货代 > 全局）。空=不限该维度。
+    # 托书 master 设 forwarder_id；报关/投保/采购合同 master 设 company_id；
+    # 某店铺特殊则设 brand_id（override，最优先）。
+    company_id = Column(Integer, ForeignKey("companies.id"), index=True)  # 主体级
+    brand_id = Column(Integer, ForeignKey("brands.id"), index=True)       # 店铺级 override
     doc_type = Column(String(32), default="其他")  # 托书/报关资料/投保单/采购合同/9810/装箱单/其他
     stored_file = Column(String(255), default="")
     original_name = Column(String(255), default="")

@@ -14,9 +14,36 @@ from .. import ai_mapping
 from ..database import TEMPLATE_STORE, get_db
 from ..field_registry import FIELD_DICT
 from ..models import Template
-from ..services import generate_service
+from ..services import generate_service, template_service
 
 router = APIRouter()
+
+
+class ScopeIn(BaseModel):
+    """设置模板分层 scope（任一为 None 则清空该维度）。"""
+    forwarder_id: int | None = None
+    company_id: int | None = None
+    brand_id: int | None = None
+
+
+@router.get("/templates/by-scope")
+def templates_by_scope(db: Session = Depends(get_db)):
+    """模板库分层视图：店铺override / 主体master / 货代master / 全局。"""
+    return template_service.list_by_scope(db)
+
+
+@router.post("/templates/{template_id}/scope")
+def set_template_scope(template_id: int, body: ScopeIn, db: Session = Depends(get_db)):
+    """设置某模板的分层 scope（货代/主体/店铺）。空=不限该维度。"""
+    t = db.get(Template, template_id)
+    if t is None:
+        raise HTTPException(404, "模板不存在")
+    t.forwarder_id = body.forwarder_id
+    t.company_id = body.company_id
+    t.brand_id = body.brand_id
+    db.commit()
+    return {"id": t.id, "forwarder_id": t.forwarder_id,
+            "company_id": t.company_id, "brand_id": t.brand_id}
 
 _UNSAFE = re.compile(r'[\\/:*?"<>|\r\n\t]')
 
