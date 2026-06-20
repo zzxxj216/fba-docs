@@ -324,14 +324,16 @@ def weekly_comparison(db, op, quotes):
                     head += qty * (r.get("rate") or 0)
                 total = (o.get("fee_usd") or 0) + head
                 if not miss and (best is None or total < best["total"]):
-                    best = {"option": o.get("label"), "fee": round(o.get("fee_usd") or 0, 1),
+                    best = {"option": o.get("label"), "option_id": o.get("placement_option_id"),
+                            "fee": round(o.get("fee_usd") or 0, 1),
                             "head_haul": round(head, 1), "total": round(total, 1)}
             if best is None:
                 full = False
-                per_batch.append({"batch": b.name, "error": "所有方案都有缺仓未报价"})
+                per_batch.append({"batch": b.name, "batch_id": b.id,
+                                  "error": "所有方案都有缺仓未报价"})
             else:
                 grand_total += best["total"]
-                per_batch.append({"batch": b.name, **best})
+                per_batch.append({"batch": b.name, "batch_id": b.id, **best})
         result.append({"forwarder": fname, "currency": currency,
                        "total": round(grand_total, 1), "coverage_ok": full,
                        "per_batch": per_batch})
@@ -688,13 +690,35 @@ def _act_choose_weekly(db, chat_id, open_id, value):
     此处先不自动提交（红线 + 上次误操作教训）。
     """
     fname = (value or {}).get("forwarder") or "?"
-    body = (f"✅ 已选定货代 **{fname}**（整包）。\n\n"
-            "**下一步**（真实写，待接入、逐批人工确认）：对每个批次向亚马逊"
-            "**提交其最优分仓方案 + 配置自送运输**，再进入发托书。\n"
-            "选定已留痕；提交分仓/运输不会自动执行。")
-    card = cards.text_card("已选定货代", body, template="green")
+    op = intake.identify_operator(db, open_id=open_id)
+    data = weekly_comparison_from_db(db, op)
+    chosen = next((r for r in (data.get("comparison") or []) if r.get("forwarder") == fname), None)
+    if chosen is None:
+        card = cards.text_card("选定货代", f"没找到 {fname} 的比价结果，先发「比价」再选。", template="orange")
+        return {"card": card, "sent": _safe_send_card(chat_id, card), "action": "choose_weekly"}
+    live = os.getenv("INBOUND_LIVE_SUBMIT") == "1"
+    from ..services import inbound_service as ib
+    lines = [f"✅ 选定货代 **{fname}**（整包 {chosen.get('total')} {chosen.get('currency', 'USD')}）",
+             "逐批提交最优分仓方案 + 配自送：" + ("**真实提交亚马逊**" if live else "**演练（不碰亚马逊）**")]
+    for pb in chosen.get("per_batch") or []:
+        bid, oid = pb.get("batch_id"), pb.get("option_id")
+        if not bid or not oid:
+            lines.append(f"　⚠️ {pb.get('batch')}：{pb.get('error') or '缺方案ID，跳过'}")
+            continue
+        b = db.get(Batch, bid)
+        try:
+            plan = ib.confirm_placement_for_batch(db, b, oid, live=live)
+            if plan.get("dry_run"):
+                lines.append(f"　🧪 {pb.get('batch')}：方案[{pb.get('option')}] 演练OK（{len(plan.get('fcs') or [])} 仓）")
+            else:
+                lines.append(f"　✅ {pb.get('batch')}：已提交+配自送（{len(plan.get('shipments') or [])} 货件）")
+        except Exception as e:
+            lines.append(f"　❌ {pb.get('batch')}：{str(e)[:60]}")
+    if not live:
+        lines.append("\n真实提交需运维开 `INBOUND_LIVE_SUBMIT=1`（确认无误再开）。")
+    card = cards.text_card("选定货代 + 逐批提交分仓", "\n".join(lines), template="green")
     return {"card": card, "sent": _safe_send_card(chat_id, card),
-            "action": "choose_weekly", "forwarder": fname}
+            "action": "choose_weekly", "forwarder": fname, "live": live}
 
 
 def _act_confirm_purchase(db, chat_id, open_id, value):
