@@ -236,6 +236,38 @@ def placement_card(batch_name, options):
             "elements": elements}
 
 
+def summary_card(operator_name, summary):
+    """本周整包询价汇总卡片：所有已建仓批次的全部 FC（方案B：每批所有方案的 FC）。
+
+    summary: {batch_count, fc_count, batches:[{batch_id,name,store,option_count,fcs:[{fc,boxes,weight_kg}]}]}
+    """
+    batches = summary.get("batches") or []
+    head = {"tag": "div", "text": {"tag": "lark_md",
+            "content": f"**{operator_name}** 本周已建仓 **{summary.get('batch_count', 0)}** 个批次、"
+                       f"共 **{summary.get('fc_count', 0)}** 个目的仓。整包询价汇总如下："}}
+    if not batches:
+        return {"config": {"wide_screen_mode": True},
+                "header": _header("📋 本周整包询价汇总", "carmine"),
+                "elements": [head, {"tag": "div", "text": {"tag": "lark_md",
+                            "content": "本周还没有已建仓批次，先去【确认采购】/建仓。"}}]}
+    elements = [head]
+    for b in batches:
+        lines = [f"📦 **{b.get('name')}**　{b.get('store', '')}　（{b.get('option_count', 0)} 个方案）"]
+        for f in (b.get("fcs") or [])[:15]:
+            lines.append(f"　🏬 {f.get('fc')}　{f.get('boxes', 0)}箱 · {f.get('weight_kg', 0)}kg")
+        elements.append({"tag": "hr"})
+        elements.append({"tag": "div", "text": {"tag": "lark_md", "content": "\n".join(lines)}})
+    elements.append({"tag": "hr"})
+    elements.append({"tag": "action", "actions": [
+        _btn("🚢 整包询价（发货代）", "weekly_inquiry", {}, btn_type="primary"),
+    ]})
+    elements.append({"tag": "note", "elements": [{"tag": "plain_text",
+                    "content": "汇总齐了点【整包询价】，把全部 FC 一次性发给货代报头程"}]})
+    return {"config": {"wide_screen_mode": True},
+            "header": _header("📋 本周整包询价汇总", "carmine"),
+            "elements": elements}
+
+
 def inquiry_drafted_card(batch_name, inquiry_id, content, forwarder_names):
     """询价已起草卡片：展示待人工确认的正文 + 【确认群发】【取消】按钮。
 

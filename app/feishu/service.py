@@ -18,7 +18,7 @@ from ..models import Batch, Brand, Inquiry
 
 # 意图集合：restock=看本周补货/待采购（赛狐）；intake=建仓就绪体检/看待办；
 # inquiry=发起询价；compare=看比价；help/unknown
-INTENTS = ("restock", "intake", "inquiry", "compare", "fill_data", "help", "unknown")
+INTENTS = ("restock", "intake", "summary", "inquiry", "compare", "fill_data", "help", "unknown")
 
 # 主流程 agent 人设：专注亚马逊 FBA 全程管理的内部助手。寒暄/泛问时按它对话（认人+能力+引导）。
 AGENT_PERSONA = (
@@ -41,6 +41,7 @@ AGENT_PERSONA = (
 _KEYWORDS = {
     "restock": ["补货", "补仓", "待采购", "采购计划", "补仓计划", "本周补", "要补什么"],
     "intake": ["待办", "体检", "建仓", "就绪", "开始建仓", "我管"],
+    "summary": ["汇总", "本周汇总", "整包", "分仓汇总", "汇总询价"],
     "inquiry": ["询价", "报价", "发货代", "找货代"],
     "compare": ["比价", "对比", "哪家", "选货代", "报价对比"],
     "fill_data": ["补数据", "缺数据", "补全", "补资料"],
@@ -61,6 +62,7 @@ def parse_intent(text):
             sys = ("你是 FBA 发货系统的内部运营助手意图分类器。把运营的话归为以下意图之一："
                    "restock(看本周补货/待采购/补仓计划——从赛狐拉补货数据)、"
                    "intake(看建仓待办/建仓就绪体检——已有批次能不能建仓)、"
+                   "summary(看本周整包询价汇总——所有已建仓批次的分仓FC汇总到一起)、"
                    "inquiry(发起询价)、compare(看货代比价)、"
                    "fill_data(补全数据)、help(帮助)、unknown。"
                    "注意区分：『看补货/待采购/补仓计划』是 restock；『看待办/建仓体检/开始建仓』是 intake。"
@@ -219,6 +221,52 @@ def build_restock(db, op, statuses=("待采购", "待审核")):
     return out
 
 
+def build_weekly_summary(db, op):
+    """汇总运营本周所有已建仓批次的分仓信息（方案B：每批列出所有方案涉及的全部 FC）。
+
+    每个 FC 的箱数/重量取它在各方案里出现过的最大值做代表（够货代报头程参考）。
+    返回 {batch_count, fc_count, batches:[{batch_id,name,store,option_count,fcs:[...]}]}。
+    """
+    ids = []
+    if op and op.scope_brand_ids:
+        try:
+            ids = json.loads(op.scope_brand_ids) or []
+        except (ValueError, TypeError):
+            ids = []
+    q = db.query(Batch).filter(Batch.placement_options.isnot(None))
+    if not (op and op.is_admin):
+        if not ids:
+            return {"batch_count": 0, "fc_count": 0, "batches": []}
+        q = q.filter(Batch.brand_id.in_(ids))
+    batches, all_fcs = [], set()
+    for b in q.order_by(Batch.id.desc()).all():
+        try:
+            opts = json.loads(b.placement_options or "[]")
+        except (ValueError, TypeError):
+            opts = []
+        if not opts:
+            continue
+        fc_map = {}
+        for o in opts:
+            for s in (o.get("shipments") or []):
+                fc = s.get("fc")
+                if not fc:
+                    continue
+                cur = fc_map.get(fc) or {"fc": fc, "boxes": 0, "weight_kg": 0.0}
+                cur["boxes"] = max(cur["boxes"], s.get("boxes") or 0)
+                cur["weight_kg"] = max(cur["weight_kg"], s.get("weight_kg") or 0)
+                fc_map[fc] = cur
+        if not fc_map:
+            continue
+        brand = db.get(Brand, b.brand_id) if b.brand_id else None
+        all_fcs.update(fc_map)
+        batches.append({"batch_id": b.id, "name": b.name,
+                        "store": b.shop_name or (brand.name if brand else ""),
+                        "option_count": len(opts),
+                        "fcs": sorted(fc_map.values(), key=lambda x: x["fc"])})
+    return {"batch_count": len(batches), "fc_count": len(all_fcs), "batches": batches}
+
+
 def build_progress(db, op):
     """运营管辖品牌的批次进度（名称/店铺/状态）。管理员看全部。"""
     ids = []
@@ -265,6 +313,18 @@ def handle_message(db, *, chat_id, open_id=None, user_id=None, text=""):
         return {"card": card, "sent": _safe_send_card(chat_id, card),
                 "operator": op.id, "plans": len(plans), "intent": "restock"}
 
+    # 本周整包询价汇总 → 汇总所有已建仓批次的全部 FC + 写进主文件 → 汇总卡片
+    if intent["intent"] == "summary":
+        summary = build_weekly_summary(db, op)
+        try:
+            workspace.write_weekly_summary(op.name or "运营", summary)
+        except Exception:
+            pass
+        card = cards.summary_card(op.name or "运营", summary)
+        return {"card": card, "sent": _safe_send_card(chat_id, card),
+                "operator": op.id, "intent": "summary",
+                "batch_count": summary.get("batch_count")}
+
     # 明确"看建仓待办 / 建仓就绪体检"诉求 → 建仓待办卡片
     if intent["intent"] == "intake":
         data = intake.build_intake(db, op, chat_id, open_id or "")
@@ -296,6 +356,10 @@ def handle_action(db, *, chat_id, open_id, action, value):
         return _act_progress(db, chat_id, open_id)
     if action == "view_placement":
         return _act_view_placement(db, chat_id, batch_id)
+    if action == "weekly_inquiry":
+        return _act_weekly_inquiry(db, chat_id, open_id)
+    if action == "weekly_inquiry_send":
+        return _act_weekly_inquiry_send(db, chat_id, open_id)
     if action == "confirm_purchase":
         return _act_confirm_purchase(db, chat_id, open_id, value)
     if action == "build":
@@ -368,6 +432,73 @@ def _act_view_placement(db, chat_id, batch_id):
     card = cards.placement_card(b.name or f"批次#{batch_id}", opts)
     return {"card": card, "sent": _safe_send_card(chat_id, card),
             "action": "view_placement", "options": len(opts)}
+
+
+def _weekly_draft_text(summary):
+    """整包询价正文（汇总各店铺全部 FC）。"""
+    lines = ["老师好，本周一批 FBA 头程货需要整体询价，目的仓及货量如下："]
+    for b in summary.get("batches") or []:
+        fcs = "、".join(f"{f['fc']}({f.get('boxes', 0)}箱/{f.get('weight_kg', 0)}kg)"
+                       for f in (b.get("fcs") or []))
+        lines.append(f"【{b.get('store') or b.get('name')}】{fcs}")
+    lines.append("麻烦按每个目的仓分别报：运费单价(币种/单位)、渠道、时效、截关、起送费；"
+                 "另外贵司月度报关费怎么收?多谢～")
+    return "\n".join(lines)
+
+
+def _act_weekly_inquiry(db, chat_id, open_id):
+    """汇总卡片【整包询价】→ 起草整包询价正文 → 待确认卡片（不自动群发，红线）。"""
+    op = intake.identify_operator(db, open_id=open_id)
+    summary = build_weekly_summary(db, op)
+    if not summary.get("batches"):
+        card = cards.text_card("整包询价", "本周还没有已建仓批次,先建仓再汇总询价。", template="orange")
+        return {"card": card, "sent": _safe_send_card(chat_id, card), "action": "weekly_inquiry"}
+    # 预览将发给哪些货代（本周各批次品牌绑定的货代，去重）
+    fwd_names = []
+    seen = set()
+    for b in summary["batches"]:
+        bt = db.get(Batch, b["batch_id"])
+        for f in (_brand_forwarders(db, bt.brand_id) if bt else []):
+            if f.id not in seen:
+                seen.add(f.id)
+                fwd_names.append(f.name)
+    draft = _weekly_draft_text(summary)
+    body = (f"**整包询价草稿**（{summary['batch_count']} 批 · {summary['fc_count']} 个目的仓）\n"
+            f"**将发给**：{('、'.join(fwd_names)) or '（无绑定货代）'}\n\n{draft}")
+    card = cards.text_card("整包询价 · 待确认", body, template="orange")
+    card["elements"].append({"tag": "action", "actions": [
+        _btn_dict("✅ 确认群发货代", "weekly_inquiry_send", {}, "primary"),
+    ]})
+    return {"card": card, "sent": _safe_send_card(chat_id, card), "action": "weekly_inquiry"}
+
+
+def _act_weekly_inquiry_send(db, chat_id, open_id):
+    """【确认群发货代】→ 把整包询价正文真发给本周各批次绑定的货代（企微）。"""
+    op = intake.identify_operator(db, open_id=open_id)
+    summary = build_weekly_summary(db, op)
+    if not summary.get("batches"):
+        card = cards.text_card("整包询价", "本周无已建仓批次。", template="orange")
+        return {"card": card, "sent": _safe_send_card(chat_id, card), "action": "weekly_inquiry_send"}
+    draft = _weekly_draft_text(summary)
+    fwds = {}
+    for b in summary["batches"]:
+        bt = db.get(Batch, b["batch_id"])
+        for f in (_brand_forwarders(db, bt.brand_id) if bt else []):
+            fwds[f.id] = f
+    from ..services import forwarder_service as fs
+    sent, failed = [], []
+    for f in fwds.values():
+        try:
+            fs.send_message(db, f, draft)
+            sent.append(f.name)
+        except Exception as e:
+            failed.append(f"{f.name}({str(e)[:40]})")
+    body = (f"✅ 整包询价已群发 **{len(sent)}** 家货代：{('、'.join(sent)) or '（无）'}\n"
+            + (f"⚠️ 失败：{('；'.join(failed))}\n" if failed else "")
+            + "等货代回报价后,可看比价再选方案+货代。")
+    card = cards.text_card("整包询价已发出", body, template="green" if sent else "red")
+    return {"card": card, "sent": _safe_send_card(chat_id, card),
+            "action": "weekly_inquiry_send", "sent_count": len(sent)}
 
 
 def _act_confirm_purchase(db, chat_id, open_id, value):

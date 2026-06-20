@@ -128,6 +128,27 @@ def add_file(operator, plan_group_no, file_path):
     _write_plan_doc(wd, rec)
 
 
+def write_weekly_summary(operator, summary):
+    """把本周整包询价汇总(所有已建仓批次的全部 FC)写进主文件夹：本周分仓汇总.md。"""
+    wd = week_dir(operator)
+    batches = summary.get("batches") or []
+    lines = [f"# {operator} 本周整包询价汇总（{os.path.basename(wd)}）", "",
+             f"更新：{_now()}　|　已建仓批次 **{summary.get('batch_count', 0)}** 个 · "
+             f"目的仓合计 **{summary.get('fc_count', 0)}** 个", "",
+             "> 方案B：每批列出所有分仓方案涉及的全部 FC，货代逐 FC 报头程，"
+             "再按 placement费+头程 总成本选方案+货代。", ""]
+    for b in batches:
+        lines.append(f"## {b.get('name')}　{b.get('store', '')}　（{b.get('option_count', 0)} 个方案）")
+        lines.append("| 目的仓FC | 箱数 | 重量kg |")
+        lines.append("|---|---|---|")
+        for f in (b.get("fcs") or []):
+            lines.append(f"| {f.get('fc')} | {f.get('boxes', 0)} | {f.get('weight_kg', 0)} |")
+        lines.append("")
+    with open(os.path.join(wd, "本周分仓汇总.md"), "w", encoding="utf-8") as f:
+        f.write("\n".join(lines))
+    return os.path.join(wd, "本周分仓汇总.md")
+
+
 # ---------------------------------------------------------------- 文档生成
 
 def _write_plan_doc(wd, rec):
