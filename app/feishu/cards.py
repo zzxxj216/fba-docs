@@ -203,10 +203,11 @@ def progress_card(operator_name, items):
             "elements": elements}
 
 
-def placement_card(batch_name, options):
+def placement_card(batch_name, options, batch_id=None):
     """分仓方案卡片：建仓后亚马逊给的各分仓/合仓方案（FC/箱数/重量/placement费）。
 
-    options: list[dict] {label, fee_usd, shipments:[{fc,city,state,boxes,weight_kg}]}
+    options: list[dict] {placement_option_id, label, fee_usd, shipments:[{fc,city,state,boxes,weight_kg}]}
+    给定 batch_id 时，每个方案带【提交此方案+配自送】按钮（默认演练，不碰亚马逊）。
     """
     n = len(options)
     head = {"tag": "div", "text": {"tag": "lark_md",
@@ -228,9 +229,14 @@ def placement_card(batch_name, options):
             lines.append(f"　🏬 {s.get('fc')}{loc}　{s.get('boxes', 0)}箱 · {s.get('weight_kg', 0)}kg")
         elements.append({"tag": "hr"})
         elements.append({"tag": "div", "text": {"tag": "lark_md", "content": "\n".join(lines)}})
+        if batch_id and o.get("placement_option_id"):
+            elements.append({"tag": "action", "actions": [
+                _btn(f"📤 提交方案{i}+配自送", "commit_placement",
+                     {"batch_id": batch_id, "placement_option_id": o.get("placement_option_id")}),
+            ]})
     elements.append({"tag": "hr"})
     elements.append({"tag": "note", "elements": [{"tag": "plain_text",
-                    "content": "询价后按「placement费 + 头程」总成本比，再选方案 + 货代"}]})
+                    "content": "询价后按「placement费 + 头程」总成本比，再选方案 + 货代；提交默认演练不碰亚马逊"}]})
     return {"config": {"wide_screen_mode": True},
             "header": _header("🏗️ 分仓方案", "purple"),
             "elements": elements}

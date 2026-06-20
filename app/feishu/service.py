@@ -9,6 +9,7 @@
 """
 
 import json
+import os
 
 from .. import feishu_client as fc
 from .. import llm_client
@@ -429,6 +430,8 @@ def handle_action(db, *, chat_id, open_id, action, value):
         return _act_weekly_inquiry_send(db, chat_id, open_id)
     if action == "choose_weekly":
         return _act_choose_weekly(db, chat_id, open_id, value)
+    if action == "commit_placement":
+        return _act_commit_placement(db, chat_id, value)
     if action == "confirm_purchase":
         return _act_confirm_purchase(db, chat_id, open_id, value)
     if action == "build":
@@ -498,7 +501,7 @@ def _act_view_placement(db, chat_id, batch_id):
         opts = json.loads(b.placement_options or "[]")
     except (ValueError, TypeError):
         opts = []
-    card = cards.placement_card(b.name or f"批次#{batch_id}", opts)
+    card = cards.placement_card(b.name or f"批次#{batch_id}", opts, batch_id)
     return {"card": card, "sent": _safe_send_card(chat_id, card),
             "action": "view_placement", "options": len(opts)}
 
@@ -568,6 +571,40 @@ def _act_weekly_inquiry_send(db, chat_id, open_id):
     card = cards.text_card("整包询价已发出", body, template="green" if sent else "red")
     return {"card": card, "sent": _safe_send_card(chat_id, card),
             "action": "weekly_inquiry_send", "sent_count": len(sent)}
+
+
+def _act_commit_placement(db, chat_id, value):
+    """分仓方案卡片【提交此方案+配自送】→ confirm_placement_for_batch。
+
+    **默认演练(dry-run)，不碰亚马逊**；仅当环境变量 INBOUND_LIVE_SUBMIT=1 才真实提交。
+    """
+    batch_id = (value or {}).get("batch_id")
+    poid = (value or {}).get("placement_option_id")
+    b = db.get(Batch, batch_id) if batch_id else None
+    if b is None:
+        card = cards.text_card("提交分仓", "批次不存在", template="red")
+        return {"card": card, "sent": _safe_send_card(chat_id, card), "action": "commit_placement"}
+    live = os.getenv("INBOUND_LIVE_SUBMIT") == "1"
+    try:
+        from ..services import inbound_service as ib
+        plan = ib.confirm_placement_for_batch(db, b, poid, live=live)
+    except Exception as e:
+        card = cards.text_card("提交分仓失败", str(e)[:300], template="red")
+        return {"card": card, "sent": _safe_send_card(chat_id, card), "action": "commit_placement"}
+    if plan.get("dry_run"):
+        body = (f"🧪 **演练（未真实提交亚马逊）**\n"
+                f"方案 `{poid}`　仓：{('、'.join(plan.get('fcs') or [])) or '—'}\n"
+                f"将执行：{' → '.join(plan.get('steps') or [])}\n\n"
+                "真实提交需运维开启 `INBOUND_LIVE_SUBMIT=1`（确认无误再开）。")
+        card = cards.text_card("提交分仓 · 演练", body, template="blue")
+    else:
+        ships = plan.get("shipments") or []
+        body = (f"✅ 已向亚马逊提交分仓 + 配自送：**{len(ships)}** 个货件\n"
+                + "\n".join(f"　🏬 {s.get('fc')}　{s.get('confirmationId') or ''}　{s.get('status') or ''}"
+                            for s in ships[:15]))
+        card = cards.text_card("分仓已提交 + 自送已配", body, template="green")
+    return {"card": card, "sent": _safe_send_card(chat_id, card),
+            "action": "commit_placement", "dry_run": plan.get("dry_run", True)}
 
 
 def _act_choose_weekly(db, chat_id, open_id, value):
@@ -653,7 +690,7 @@ def _act_confirm_purchase(db, chat_id, open_id, value):
         workspace.record_plan(opname, pgn, stage="已建仓", note=f"{len(opts)} 个分仓方案")
         steps.append(f"✅ 建仓完成 → {len(opts)} 个分仓方案")
         # 采购+建仓进度已记入工作区；给运营直接看分仓方案卡片
-        card = cards.placement_card(batch.name or _batch_name(db, batch.id), opts)
+        card = cards.placement_card(batch.name or _batch_name(db, batch.id), opts, batch.id)
         return {"card": card, "sent": _safe_send_card(chat_id, card),
                 "action": "confirm_purchase", "batch_id": batch.id}
     except RuntimeError as e:

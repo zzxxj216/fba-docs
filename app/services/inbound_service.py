@@ -567,3 +567,95 @@ def build_for_batch(db, batch):
     batch.placement_options = json.dumps(out, ensure_ascii=False)
     db.commit()
     return {"inbound_plan_id": pid, "option_count": len(out)}
+
+
+def confirm_placement_for_batch(db, batch, placement_option_id, *, live=False):
+    """选定后：对批次确认某分仓方案 → 生成 FC 货件 → 配自送运输 → 回填货件。
+
+    **live=False（默认）只演练(dry-run)**：构造将执行的步骤，**完全不调用亚马逊**。
+    live=True 才真实写亚马逊（Feishu 侧由环境变量 INBOUND_LIVE_SUBMIT=1 才允许）。
+    """
+    pid = batch.inbound_plan_id
+    if not pid:
+        raise RuntimeError("该批次还没建仓(无 inbound_plan_id)，先建仓")
+    try:
+        opts = json.loads(batch.placement_options or "[]")
+    except (ValueError, TypeError):
+        opts = []
+    chosen = next((o for o in opts if o.get("placement_option_id") == placement_option_id), None)
+    if not chosen:
+        raise RuntimeError(f"分仓方案 {placement_option_id} 不在该批次方案里")
+    store = _store(db, batch.brand_id) or None
+    fcs = [s.get("fc") for s in (chosen.get("shipments") or [])]
+    plan = {"inbound_plan_id": pid, "store": store or "main(默认)",
+            "placement_option_id": placement_option_id, "fcs": fcs,
+            "steps": ["确认分仓方案(生成货件)", "生成运输方案(自送)",
+                      "选自送承运人并确认", "回填货件 FC/确认号"]}
+    if not live:
+        plan["dry_run"] = True
+        return plan                       # 🛑 演练：到此为止，不碰亚马逊
+    # ===== 以下真实写亚马逊，仅 live=True =====
+    c = fba.call("POST", f"/inbound-plans/{pid}/placement-options/{placement_option_id}/confirm", store=store)
+    fba.wait_operation(c["operationId"], store=store, timeout=300)
+    pl = fba.call("GET", f"/inbound-plans/{pid}/placement-options", store=store) or {}
+    o = next((x for x in pl.get("placementOptions") or []
+              if x.get("placementOptionId") == placement_option_id), None)
+    shipment_ids = (o.get("shipmentIds") if o else []) or []
+    _config_self_delivery(pid, placement_option_id, shipment_ids, store)
+    ships = _backfill_shipments(batch, pid, shipment_ids, store)
+    batch.status = "运输已配置"
+    db.commit()
+    plan.update({"dry_run": False, "shipments": ships})
+    return plan
+
+
+def _config_self_delivery(pid, placement_option_id, shipment_ids, store):
+    """给各货件配自送(非合作承运)运输：generate → 选 USE_YOUR_OWN_CARRIER → confirm。"""
+    from datetime import date, timedelta
+    rtw = {"start": (date.today() + timedelta(days=3)).strftime("%Y-%m-%dT00:00:00Z")}
+    cfgs = [{"shipmentId": sid, "readyToShipWindow": rtw} for sid in shipment_ids]
+    g = fba.call("POST", f"/inbound-plans/{pid}/transportation-options/generate", store=store,
+                 json={"placement_option_id": placement_option_id,
+                       "shipment_transportation_configurations": cfgs})
+    fba.wait_operation(g["operationId"], store=store, timeout=300)
+    opts = fba.call("GET", f"/inbound-plans/{pid}/transportation-options",
+                    params={"placement_option_id": placement_option_id}, store=store) or {}
+    all_opts = opts.get("transportationOptions") or []
+    selections = []
+    for sid in shipment_ids:
+        chosen = _pick_self_delivery(all_opts, sid)
+        if not chosen:
+            raise RuntimeError(f"货件 {sid} 没有自送(USE_YOUR_OWN_CARRIER)运输选项")
+        selections.append({"shipmentId": sid, "transportationOptionId": chosen})
+    cf = fba.call("POST", f"/inbound-plans/{pid}/transportation-options/confirm", store=store,
+                  json={"selections": selections})
+    fba.wait_operation(cf["operationId"], store=store, timeout=300)
+
+
+def _pick_self_delivery(all_opts, shipment_id):
+    """从运输方案里挑该货件的自送选项(USE_YOUR_OWN_CARRIER/非亚马逊合作承运)。"""
+    for o in all_opts:
+        if o.get("shipmentId") != shipment_id:
+            continue
+        sol = (o.get("shippingSolution") or o.get("shippingMode") or "").upper()
+        if "OWN" in sol or "NON_PARTNER" in sol or "SELF" in sol:
+            return o.get("transportationOptionId")
+    # 兜底：没有明显标志时，取该货件没有亚马逊报价(quote)的那个（自送通常无报价）
+    for o in all_opts:
+        if o.get("shipmentId") == shipment_id and not o.get("quote"):
+            return o.get("transportationOptionId")
+    return None
+
+
+def _backfill_shipments(batch, pid, shipment_ids, store):
+    """读确认后的 FC 货件(fc/地址/确认号)返回（持久化到 Shipment 留给发托书环节）。"""
+    out = []
+    for sid in shipment_ids:
+        sh = fba.call("GET", f"/inbound-plans/{pid}/shipments/{sid}", store=store) or {}
+        dest = sh.get("destination", {}) or {}
+        addr = dest.get("address", {}) or {}
+        out.append({"shipmentId": sid, "fc": dest.get("warehouseId"),
+                    "confirmationId": sh.get("shipmentConfirmationId"),
+                    "city": addr.get("city"), "state": addr.get("stateOrProvinceCode"),
+                    "status": sh.get("status")})
+    return out
