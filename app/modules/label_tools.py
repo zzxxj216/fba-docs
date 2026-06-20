@@ -6,6 +6,7 @@ Avery LETTER_30 一页 30 张）。货代要单张贴标，需要把整页按网
 """
 
 import os
+import zipfile
 
 import fitz  # PyMuPDF
 import httpx
@@ -78,6 +79,33 @@ def cut_label_sheet(src_pdf, dest_pdf, *, rows, cols, margin=(0, 0, 0, 0),
     out.close()
     src.close()
     return count
+
+
+def bundle_zip(files, dest_zip, manifest=None):
+    """把多个标签 PDF 打包成一个 zip（文件多时发一个就行），可附清单。返回 zip 路径。"""
+    os.makedirs(os.path.dirname(os.path.abspath(dest_zip)), exist_ok=True)
+    with zipfile.ZipFile(dest_zip, "w", zipfile.ZIP_DEFLATED) as z:
+        for f in files:
+            if f and os.path.exists(f):
+                z.write(f, os.path.basename(f))
+        if manifest:
+            z.writestr("清单.txt", manifest if isinstance(manifest, str) else "\n".join(manifest))
+    return dest_zip
+
+
+def merge_pdfs(files, dest_pdf):
+    """把多个 PDF 顺序合并成一个（要一次打印时用）。返回 (路径, 总页数)。"""
+    out = fitz.open()
+    for f in files:
+        if f and os.path.exists(f):
+            d = fitz.open(f)
+            out.insert_pdf(d)
+            d.close()
+    n = out.page_count
+    if n:
+        out.save(dest_pdf, deflate=True)
+    out.close()
+    return dest_pdf, n
 
 
 def cut_by_page_type(src_pdf, dest_pdf, page_type, **override):

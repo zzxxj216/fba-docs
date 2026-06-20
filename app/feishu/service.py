@@ -718,10 +718,12 @@ def _act_fetch_labels(db, chat_id, value):
         card = cards.text_card("标签下载 · 演练", body, template="blue")
     else:
         saved = plan.get("saved") or []
-        total = sum(s.get("labels") or 0 for s in saved)
-        body = (f"✅ {kname} 已下载并剪切：**{total}** 张单标签\n"
-                f"归档目录：`{plan.get('out_dir')}`\n"
-                + "\n".join(f"　{s.get('shipment', 'FNSKU')}：{s.get('labels')} 张 → {os.path.basename(s.get('cut_pdf', ''))}"
+        total = plan.get("total_labels") or sum(s.get("labels") or 0 for s in saved)
+        body = (f"✅ {kname} 已下载并剪切：**{total}** 张单标签（{len(saved)} 个货件/份）\n"
+                + (f"📦 打包：`{os.path.basename(plan.get('zip'))}`（发货代一个文件就行）\n" if plan.get("zip") else "")
+                + (f"🖨️ 合并一次打印：`{os.path.basename(plan.get('merged_pdf'))}`\n" if plan.get("merged_pdf") else "")
+                + f"归档目录：`{plan.get('out_dir')}`\n"
+                + "\n".join(f"　{s.get('shipment', 'FNSKU')}：{s.get('labels')} 张"
                             for s in saved[:15]))
         card = cards.text_card("标签已下载（已剪切单张）", body, template="green")
     return {"card": card, "sent": _safe_send_card(chat_id, card),

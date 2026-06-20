@@ -705,7 +705,19 @@ def fetch_labels(db, batch, kind="box", page_type=None, live=False):
             lt.download_pdf(url, raw)
             n = lt.cut_by_page_type(raw, cut, page_type)
             saved.append({"cut_pdf": cut, "labels": n})
-    plan.update({"dry_run": False, "saved": saved, "out_dir": out_dir})
+    # 文件多 → 打包成一个 zip（各货件箱唛 + FNSKU + 清单）+ 合并一个 PDF 便于一次打印
+    cut_files = [s["cut_pdf"] for s in saved if s.get("cut_pdf")]
+    zip_path = merged = None
+    total = sum(s.get("labels") or 0 for s in saved)
+    if cut_files:
+        manifest = [f"{s.get('shipment', 'FNSKU')}  {s.get('labels')} 张  "
+                    f"{os.path.basename(s.get('cut_pdf', ''))}" for s in saved]
+        manifest.append(f"合计 {total} 张")
+        from ..modules import label_tools as lt
+        zip_path = lt.bundle_zip(cut_files, os.path.join(out_dir, f"{kind}_标签打包.zip"), manifest)
+        merged, _ = lt.merge_pdfs(cut_files, os.path.join(out_dir, f"{kind}_全部单张.pdf"))
+    plan.update({"dry_run": False, "saved": saved, "out_dir": out_dir,
+                 "zip": zip_path, "merged_pdf": merged, "total_labels": total})
     return plan
 
 
