@@ -195,8 +195,8 @@ def progress_card(operator_name, items):
         elements.append({"tag": "div", "text": {"tag": "lark_md", "content": block}})
         if it.get("status") == "已建仓" and it.get("batch_id"):
             elements.append({"tag": "action", "actions": [
-                _btn("🏗️ 查看分仓方案", "view_placement",
-                     {"batch_id": it.get("batch_id")}),
+                _btn("🏗️ 查看分仓方案", "view_placement", {"batch_id": it.get("batch_id")}),
+                _btn("📄 生成文件", "gen_docs", {"batch_id": it.get("batch_id")}),
             ]})
     return {"config": {"wide_screen_mode": True},
             "header": _header("🔍 批次进度", "turquoise"),
@@ -307,6 +307,35 @@ def weekly_comparison_card(comparison):
                     "content": "选定 = 锁定货代 + 各批用其最优分仓方案；提交分仓到亚马逊仍需人工确认"}]})
     return {"config": {"wide_screen_mode": True},
             "header": _header("📊 整包比价 · 请人工选定", "purple"),
+            "elements": elements}
+
+
+def docs_card(batch_name, batch_id, data):
+    """生成文件卡片：列店铺可选模板（按 doc_type），⭐=该店铺推荐，点模板即生成。"""
+    groups = data.get("groups") or {}
+    head = {"tag": "div", "text": {"tag": "lark_md",
+            "content": f"**{batch_name}**　选模板生成文件（⭐=该店铺推荐）："}}
+    if not groups:
+        return {"config": {"wide_screen_mode": True},
+                "header": _header("📄 生成文件", "blue"),
+                "elements": [head, {"tag": "div", "text": {"tag": "lark_md",
+                            "content": "没有可用模板。先在模板库上传/给店铺挂模板。"}}]}
+    elements = [head]
+    for dt, tmpls in groups.items():
+        elements.append({"tag": "hr"})
+        elements.append({"tag": "div", "text": {"tag": "lark_md", "content": f"**{dt}**"}})
+        btns = []
+        for t in tmpls[:4]:
+            star = "⭐" if t.get("recommended") else ""
+            btns.append(_btn(f"{star}{t['name']}", "gen_doc",
+                             {"batch_id": batch_id, "template_id": t["id"]},
+                             btn_type="primary" if t.get("recommended") else "default"))
+        elements.append({"tag": "action", "actions": btns})
+    elements.append({"tag": "hr"})
+    elements.append({"tag": "note", "elements": [{"tag": "plain_text",
+                    "content": "点模板即按该模板生成（校验通过才出文件）；生成文件存归档目录"}]})
+    return {"config": {"wide_screen_mode": True},
+            "header": _header("📄 生成文件 · 选模板", "blue"),
             "elements": elements}
 
 

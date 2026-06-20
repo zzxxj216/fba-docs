@@ -507,6 +507,10 @@ def handle_action(db, *, chat_id, open_id, action, value):
         return _act_commit_placement(db, chat_id, value)
     if action == "fetch_labels":
         return _act_fetch_labels(db, chat_id, value)
+    if action == "gen_docs":
+        return _act_gen_docs(db, chat_id, batch_id)
+    if action == "gen_doc":
+        return _act_gen_doc(db, chat_id, value)
     if action == "confirm_purchase":
         return _act_confirm_purchase(db, chat_id, open_id, value)
     if action == "build":
@@ -693,6 +697,51 @@ def _act_commit_placement(db, chat_id, value):
         card = cards.text_card("分仓已提交 + 自送已配", body, template="green")
     return {"card": card, "sent": _safe_send_card(chat_id, card),
             "action": "commit_placement", "dry_run": plan.get("dry_run", True)}
+
+
+def _act_gen_docs(db, chat_id, batch_id):
+    """进度卡【生成文件】→ 列该批次(店铺)可选模板 → 选模板卡片。"""
+    b = db.get(Batch, batch_id) if batch_id else None
+    if b is None:
+        card = cards.text_card("生成文件", "批次不存在", template="red")
+        return {"card": card, "sent": _safe_send_card(chat_id, card), "action": "gen_docs"}
+    from ..services import template_service as ts
+    data = ts.candidates_for_batch(db, b)
+    card = cards.docs_card(b.name or f"批次#{batch_id}", b.id, data)
+    return {"card": card, "sent": _safe_send_card(chat_id, card),
+            "action": "gen_docs", "groups": len(data.get("groups") or {})}
+
+
+def _act_gen_doc(db, chat_id, value):
+    """选模板卡【生成】→ generate_service.generate（校验通过才出文件）。"""
+    batch_id = (value or {}).get("batch_id")
+    tid = (value or {}).get("template_id")
+    b = db.get(Batch, batch_id) if batch_id else None
+    if b is None or not tid:
+        card = cards.text_card("生成文件", "批次或模板缺失", template="red")
+        return {"card": card, "sent": _safe_send_card(chat_id, card), "action": "gen_doc"}
+    from ..services import generate_service
+    try:
+        res = generate_service.generate(db, batch_id, [tid])
+    except Exception as e:
+        card = cards.text_card("生成失败", str(e)[:300], template="red")
+        return {"card": card, "sent": _safe_send_card(chat_id, card), "action": "gen_doc"}
+    if res.get("blocked"):
+        rep = res.get("report") or {}
+        issues = rep.get("issues") or rep.get("errors") or []
+        body = ("⛔ **校验未通过，未生成**（校验是生成的前置）：\n"
+                + "\n".join(f"　- {str(x)[:80]}" for x in issues[:8]) if issues
+                else "⛔ 校验未通过，未生成。")
+        card = cards.text_card("生成被拦截 · 先过校验", body, template="orange")
+        return {"card": card, "sent": _safe_send_card(chat_id, card), "action": "gen_doc"}
+    gen = res.get("generated") or []
+    errs = res.get("errors") or []
+    body = (f"✅ 已生成 **{len(gen)}** 个文件\n"
+            + "\n".join(f"　📄 {g.get('label') or g.get('filename')}" for g in gen[:12])
+            + (f"\n⚠️ {len(errs)} 个问题：" + "；".join(str(e)[:60] for e in errs[:4]) if errs else ""))
+    card = cards.text_card("文件已生成", body, template="green" if gen else "orange")
+    return {"card": card, "sent": _safe_send_card(chat_id, card),
+            "action": "gen_doc", "generated": len(gen), "errors": len(errs)}
 
 
 def _act_fetch_labels(db, chat_id, value):

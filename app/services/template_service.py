@@ -50,6 +50,30 @@ def resolve_templates(db, doc_types, *, brand=None, forwarder=None, company=None
             for dt in doc_types}
 
 
+def candidates_for_batch(db, batch):
+    """该批次(店铺)可选的模板，按 doc_type 分组供运营勾选。
+
+    规则：排除"挂在别的店铺名下"的模板；命中本店铺(brand)/本主体(company)的标 ⭐推荐、排前。
+    返回 {"brand": 店铺名, "groups": {doc_type: [{id,name,granularity,recommended}]}}。
+    """
+    from ..models import Brand
+    brand = db.get(Brand, batch.brand_id) if batch.brand_id else None
+    bid = brand.id if brand else None
+    cid = brand.company_id if brand else None
+    groups = {}
+    for t in (db.query(Template).filter(Template.active.is_(True))
+              .order_by(Template.doc_type, Template.id).all()):
+        if t.brand_id and t.brand_id != bid:
+            continue                      # 别的店铺专属模板，不给本店铺列
+        rec = bool((t.brand_id and t.brand_id == bid)
+                   or (t.company_id and cid and t.company_id == cid))
+        groups.setdefault(t.doc_type, []).append(
+            {"id": t.id, "name": t.name, "granularity": t.granularity, "recommended": rec})
+    for dt in groups:
+        groups[dt].sort(key=lambda x: (not x["recommended"], x["id"]))
+    return {"brand": brand.name if brand else "", "groups": groups}
+
+
 def list_by_scope(db):
     """模板库分层视图：店铺override / 主体master / 货代master / 全局。"""
     out = {"brand": [], "company": [], "forwarder": [], "global": []}
