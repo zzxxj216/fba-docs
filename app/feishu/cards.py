@@ -193,8 +193,46 @@ def progress_card(operator_name, items):
                  f"店铺：{it.get('brand', '')}")
         elements.append({"tag": "hr"})
         elements.append({"tag": "div", "text": {"tag": "lark_md", "content": block}})
+        if it.get("status") == "已建仓" and it.get("batch_id"):
+            elements.append({"tag": "action", "actions": [
+                _btn("🏗️ 查看分仓方案", "view_placement",
+                     {"batch_id": it.get("batch_id")}),
+            ]})
     return {"config": {"wide_screen_mode": True},
             "header": _header("🔍 批次进度", "turquoise"),
+            "elements": elements}
+
+
+def placement_card(batch_name, options):
+    """分仓方案卡片：建仓后亚马逊给的各分仓/合仓方案（FC/箱数/重量/placement费）。
+
+    options: list[dict] {label, fee_usd, shipments:[{fc,city,state,boxes,weight_kg}]}
+    """
+    n = len(options)
+    head = {"tag": "div", "text": {"tag": "lark_md",
+            "content": f"**{batch_name}** 建仓后有 **{n}** 个分仓方案"
+                       "（留着和货代头程成本一起比，再选方案 + 货代）："}}
+    if not options:
+        return {"config": {"wide_screen_mode": True},
+                "header": _header("🏗️ 分仓方案", "purple"),
+                "elements": [head, {"tag": "div", "text": {"tag": "lark_md",
+                            "content": "暂无分仓方案（可能还没建仓）。"}}]}
+    elements = [head]
+    for i, o in enumerate(options, 1):
+        shs = o.get("shipments") or []
+        fee = o.get("fee_usd") or 0
+        lines = [f"**方案{i}**　{o.get('label', '')}　·　placement费 ${fee}"]
+        for s in shs[:12]:
+            loc = "/".join(x for x in (s.get("city"), s.get("state")) if x)
+            loc = f"（{loc}）" if loc else ""
+            lines.append(f"　🏬 {s.get('fc')}{loc}　{s.get('boxes', 0)}箱 · {s.get('weight_kg', 0)}kg")
+        elements.append({"tag": "hr"})
+        elements.append({"tag": "div", "text": {"tag": "lark_md", "content": "\n".join(lines)}})
+    elements.append({"tag": "hr"})
+    elements.append({"tag": "note", "elements": [{"tag": "plain_text",
+                    "content": "询价后按「placement费 + 头程」总成本比，再选方案 + 货代"}]})
+    return {"config": {"wide_screen_mode": True},
+            "header": _header("🏗️ 分仓方案", "purple"),
             "elements": elements}
 
 

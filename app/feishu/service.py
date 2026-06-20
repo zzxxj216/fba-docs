@@ -294,6 +294,8 @@ def handle_action(db, *, chat_id, open_id, action, value):
         return _act_restock(db, chat_id, open_id)
     if action == "view_progress":
         return _act_progress(db, chat_id, open_id)
+    if action == "view_placement":
+        return _act_view_placement(db, chat_id, batch_id)
     if action == "confirm_purchase":
         return _act_confirm_purchase(db, chat_id, open_id, value)
     if action == "build":
@@ -351,6 +353,21 @@ def _btn_dict(text, action, value_extra=None, btn_type="default"):
         v.update(value_extra)
     return {"tag": "button", "text": {"tag": "plain_text", "content": text},
             "type": btn_type, "value": v}
+
+
+def _act_view_placement(db, chat_id, batch_id):
+    """进度卡片【查看分仓方案】→ 读批次已存的 placement_options → 分仓方案卡片（只读）。"""
+    b = db.get(Batch, batch_id) if batch_id else None
+    if b is None:
+        card = cards.text_card("分仓方案", "批次不存在", template="red")
+        return {"card": card, "sent": _safe_send_card(chat_id, card), "action": "view_placement"}
+    try:
+        opts = json.loads(b.placement_options or "[]")
+    except (ValueError, TypeError):
+        opts = []
+    card = cards.placement_card(b.name or f"批次#{batch_id}", opts)
+    return {"card": card, "sent": _safe_send_card(chat_id, card),
+            "action": "view_placement", "options": len(opts)}
 
 
 def _act_confirm_purchase(db, chat_id, open_id, value):
@@ -419,12 +436,10 @@ def _act_confirm_purchase(db, chat_id, open_id, value):
             opts = []
         workspace.record_plan(opname, pgn, stage="已建仓", note=f"{len(opts)} 个分仓方案")
         steps.append(f"✅ 建仓完成 → {len(opts)} 个分仓方案")
-        for i, o in enumerate(opts[:3], 1):
-            shs = o.get("shipments") or []
-            steps.append(f"　方案{i}：{len(shs)}仓　"
-                         + "、".join(f"{s.get('fc')}({s.get('boxes')}箱)" for s in shs[:6]))
-        card = cards.text_card("✅ 确认采购 + 建仓完成", "\n".join(steps), template="green")
-        return {"card": card, "sent": _safe_send_card(chat_id, card), "action": "confirm_purchase"}
+        # 采购+建仓进度已记入工作区；给运营直接看分仓方案卡片
+        card = cards.placement_card(batch.name or _batch_name(db, batch.id), opts)
+        return {"card": card, "sent": _safe_send_card(chat_id, card),
+                "action": "confirm_purchase", "batch_id": batch.id}
     except RuntimeError as e:
         db.rollback()
         workspace.log(opname, pgn, f"建仓失败：{e}", level="error", shop=shop)
