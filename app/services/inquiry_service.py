@@ -14,6 +14,7 @@
 """
 
 import json
+import os
 from datetime import datetime
 
 from .. import llm_client
@@ -151,6 +152,27 @@ def start_inquiry(db, batch_id):
     db.flush()
     inq.ref_code = _gen_ref_code(db, batch)
     inq.content = _draft_content(inq, lanes, batch, forwarders)
+    db.commit()
+    return inq
+
+
+def start_weekly_inquiry(db, batches, lanes, forwarder_ids, content, ref_code):
+    """整包询价：跨批次合并的 Inquiry（batch_id 取代表批次，lanes 为合并目的仓）。
+
+    content 为整包询价正文（已含暗号 ref_code），target_forwarder_ids 为去重货代。
+    structured.weekly=True 标记，便于比价时识别整包询价。
+    """
+    rep = batches[0]
+    forwarders = [db.get(Forwarder, i) for i in forwarder_ids]
+    channel = "room" if any(f and f.qiwe_room_id for f in forwarders) else "private"
+    inq = Inquiry(batch_id=rep.id, status="待发送", channel=channel, ref_code=ref_code,
+                  content=content,
+                  lanes_snapshot=json.dumps(lanes, ensure_ascii=False),
+                  structured=json.dumps({"lanes": lanes, "weekly": True,
+                                         "batch_ids": [b.id for b in batches]},
+                                        ensure_ascii=False),
+                  target_forwarder_ids=json.dumps(list(forwarder_ids)))
+    db.add(inq)
     db.commit()
     return inq
 
@@ -334,9 +356,29 @@ def record_incoming(db, payload):
         if r.get("stored") and r.get("message_id"):
             msg = db.get(ForwarderMessage, r["message_id"])
             if msg and msg.direction == "in":
-                attributed.append(attribute_message(db, msg))
+                a = attribute_message(db, msg)
+                # 归属到某询价 → 自动提取报价（文字/图片）落 QuoteLine，免人工触发
+                if msg.inquiry_id and a.get("status") in ("auto", "manual"):
+                    try:
+                        a["extracted"] = bool(_auto_extract(db, msg))
+                    except Exception:
+                        a["extracted"] = False
+                attributed.append(a)
     res["attribution"] = attributed
     return res
+
+
+def _auto_extract(db, msg):
+    """归属成功的来信 → 自动提取报价。文字走文本提取；图片有本地路径才走视觉提取。"""
+    if msg.msg_type == "image":
+        media = _jload(msg.media, {}) or {}
+        path = media.get("path") or media.get("local_path") or ""
+        if path and os.path.exists(path):
+            return extract_quote_from_image(db, msg.inquiry_id, msg.forwarder_id, path)
+        return None
+    if (msg.content or "").strip():
+        return extract_quote_from_text(db, msg.inquiry_id, msg.forwarder_id, msg.content)
+    return None
 
 
 # ---------------------------------------------------------------- 提取 → QuoteLine
