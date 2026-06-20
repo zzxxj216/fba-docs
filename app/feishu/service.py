@@ -267,6 +267,73 @@ def build_weekly_summary(db, op):
     return {"batch_count": len(batches), "fc_count": len(all_fcs), "batches": batches}
 
 
+def _weekly_built_batches(db, op):
+    """运营本周所有已建仓批次 [(batch, placement_options)]。"""
+    ids = []
+    if op and op.scope_brand_ids:
+        try:
+            ids = json.loads(op.scope_brand_ids) or []
+        except (ValueError, TypeError):
+            ids = []
+    q = db.query(Batch).filter(Batch.placement_options.isnot(None))
+    if not (op and op.is_admin):
+        if not ids:
+            return []
+        q = q.filter(Batch.brand_id.in_(ids))
+    out = []
+    for b in q.order_by(Batch.id.desc()).all():
+        try:
+            opts = json.loads(b.placement_options or "[]")
+        except (ValueError, TypeError):
+            opts = []
+        if opts:
+            out.append((b, opts))
+    return out
+
+
+def weekly_comparison(db, op, quotes):
+    """整包比价（方案B）：给各货代逐 FC 头程报价，算每家承接整包的总价。
+
+    quotes: {货代名: {FC: {"rate": float, "unit": "/kg"|"/box", "currency": "USD"}}}
+    每批挑成本最低且全覆盖的分仓方案(placement费 + 该方案各FC头程)；
+    货代整包总价 = Σ各批最优方案。返回按总价排序的列表（缺仓不全覆盖的排后）。
+    """
+    batches = _weekly_built_batches(db, op)
+    result = []
+    for fname, frates in (quotes or {}).items():
+        currency = next((v.get("currency", "USD") for v in frates.values()), "USD")
+        per_batch, grand_total, full = [], 0.0, True
+        for b, opts in batches:
+            best = None
+            for o in opts:
+                head, miss = 0.0, []
+                for s in (o.get("shipments") or []):
+                    fc = s.get("fc")
+                    r = frates.get(fc)
+                    if not r:
+                        miss.append(fc)
+                        continue
+                    qty = (s.get("weight_kg") or 0) if "kg" in r.get("unit", "") else (s.get("boxes") or 0)
+                    head += qty * (r.get("rate") or 0)
+                total = (o.get("fee_usd") or 0) + head
+                if not miss and (best is None or total < best["total"]):
+                    best = {"option": o.get("label"), "fee": round(o.get("fee_usd") or 0, 1),
+                            "head_haul": round(head, 1), "total": round(total, 1)}
+            if best is None:
+                full = False
+                per_batch.append({"batch": b.name, "error": "所有方案都有缺仓未报价"})
+            else:
+                grand_total += best["total"]
+                per_batch.append({"batch": b.name, **best})
+        result.append({"forwarder": fname, "currency": currency,
+                       "total": round(grand_total, 1), "coverage_ok": full,
+                       "per_batch": per_batch})
+    result.sort(key=lambda x: (not x["coverage_ok"], x["total"]))
+    for i, r in enumerate(result):
+        r["recommended"] = (i == 0 and r["coverage_ok"])
+    return result
+
+
 def build_progress(db, op):
     """运营管辖品牌的批次进度（名称/店铺/状态）。管理员看全部。"""
     ids = []
@@ -360,6 +427,8 @@ def handle_action(db, *, chat_id, open_id, action, value):
         return _act_weekly_inquiry(db, chat_id, open_id)
     if action == "weekly_inquiry_send":
         return _act_weekly_inquiry_send(db, chat_id, open_id)
+    if action == "choose_weekly":
+        return _act_choose_weekly(db, chat_id, open_id, value)
     if action == "confirm_purchase":
         return _act_confirm_purchase(db, chat_id, open_id, value)
     if action == "build":
@@ -499,6 +568,22 @@ def _act_weekly_inquiry_send(db, chat_id, open_id):
     card = cards.text_card("整包询价已发出", body, template="green" if sent else "red")
     return {"card": card, "sent": _safe_send_card(chat_id, card),
             "action": "weekly_inquiry_send", "sent_count": len(sent)}
+
+
+def _act_choose_weekly(db, chat_id, open_id, value):
+    """整包比价【选定这家】→ 记录选定货代（本地留痕）。
+
+    真实"向亚马逊提交各批最优分仓方案 + 配置自送运输"属关键写操作，待接入后逐批人工确认，
+    此处先不自动提交（红线 + 上次误操作教训）。
+    """
+    fname = (value or {}).get("forwarder") or "?"
+    body = (f"✅ 已选定货代 **{fname}**（整包）。\n\n"
+            "**下一步**（真实写，待接入、逐批人工确认）：对每个批次向亚马逊"
+            "**提交其最优分仓方案 + 配置自送运输**，再进入发托书。\n"
+            "选定已留痕；提交分仓/运输不会自动执行。")
+    card = cards.text_card("已选定货代", body, template="green")
+    return {"card": card, "sent": _safe_send_card(chat_id, card),
+            "action": "choose_weekly", "forwarder": fname}
 
 
 def _act_confirm_purchase(db, chat_id, open_id, value):

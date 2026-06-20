@@ -268,6 +268,42 @@ def summary_card(operator_name, summary):
             "elements": elements}
 
 
+def weekly_comparison_card(comparison):
+    """整包比价卡片：各货代承接整包的总价(每批已自动选最优分仓方案)+ 推荐 + 选定按钮。
+
+    comparison: weekly_comparison 的返回 [{forwarder,currency,total,coverage_ok,recommended,per_batch:[...]}]
+    """
+    if not comparison:
+        return text_card("整包比价", "还没有货代报价。等货代回价后再看比价。", template="orange")
+    head = {"tag": "div", "text": {"tag": "lark_md",
+            "content": f"共 **{len(comparison)}** 家货代报价，按整包总价排序"
+                       "（每批已自动选最优分仓方案 = placement费 + 头程）："}}
+    elements = [head]
+    for r in comparison:
+        rec = "　⭐推荐" if r.get("recommended") else ""
+        cov = "" if r.get("coverage_ok") else "　<font color='red'>⚠️有缺仓</font>"
+        lines = [f"**{r.get('forwarder')}**{rec}　整包 **{r.get('total')} {r.get('currency', 'USD')}**{cov}"]
+        for pb in r.get("per_batch") or []:
+            if pb.get("error"):
+                lines.append(f"　{pb.get('batch')}：<font color='red'>{pb['error']}</font>")
+            else:
+                lines.append(f"　{pb.get('batch')}：方案[{pb.get('option')}] "
+                             f"placement${pb.get('fee')} + 头程${pb.get('head_haul')} = **${pb.get('total')}**")
+        elements.append({"tag": "hr"})
+        elements.append({"tag": "div", "text": {"tag": "lark_md", "content": "\n".join(lines)}})
+        if r.get("coverage_ok"):
+            elements.append({"tag": "action", "actions": [
+                _btn("✅ 选定这家", "choose_weekly", {"forwarder": r.get("forwarder")},
+                     btn_type="primary" if r.get("recommended") else "default"),
+            ]})
+    elements.append({"tag": "hr"})
+    elements.append({"tag": "note", "elements": [{"tag": "plain_text",
+                    "content": "选定 = 锁定货代 + 各批用其最优分仓方案；提交分仓到亚马逊仍需人工确认"}]})
+    return {"config": {"wide_screen_mode": True},
+            "header": _header("📊 整包比价 · 请人工选定", "purple"),
+            "elements": elements}
+
+
 def inquiry_drafted_card(batch_name, inquiry_id, content, forwarder_names):
     """询价已起草卡片：展示待人工确认的正文 + 【确认群发】【取消】按钮。
 
