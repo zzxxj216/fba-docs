@@ -10,6 +10,7 @@
 
 import json
 import os
+import re
 
 from .. import feishu_client as fc
 from .. import llm_client
@@ -511,6 +512,8 @@ def handle_action(db, *, chat_id, open_id, action, value):
         return _act_gen_docs(db, chat_id, batch_id)
     if action == "gen_doc":
         return _act_gen_doc(db, chat_id, value)
+    if action == "gen_docs_all":
+        return _act_gen_docs_all(db, chat_id, batch_id)
     if action == "confirm_purchase":
         return _act_confirm_purchase(db, chat_id, open_id, value)
     if action == "build":
@@ -712,8 +715,50 @@ def _act_gen_docs(db, chat_id, batch_id):
             "action": "gen_docs", "groups": len(data.get("groups") or {})}
 
 
+def _deliver_docs(db, chat_id, batch, gen, label):
+    """把生成的文件打包成 zip + 发到飞书群。返回 zip 路径（无文件返回 None）。"""
+    from ..database import OUTPUT_DIR
+    from ..models import GeneratedDoc
+    from ..modules import label_tools as lt
+    paths = []
+    for g in gen:
+        doc = db.get(GeneratedDoc, g.get("doc_id")) if g.get("doc_id") else None
+        if doc and doc.path and os.path.exists(doc.path):
+            paths.append(doc.path)
+    if not paths:
+        return None
+    safe = re.sub(r'[\\/:*?"<>|]', "_", f"{batch.name or batch.id}")
+    zpath = os.path.join(OUTPUT_DIR, safe, f"{safe}_{label}.zip")
+    lt.bundle_zip(paths, zpath)
+    try:
+        fc.send_file(chat_id, zpath)       # 直接把 zip 发群，运营不用翻目录
+    except Exception:
+        pass
+    return zpath
+
+
+def _finish_generate(db, chat_id, batch, res, title):
+    """统一处理生成结果：校验拦截 / 成功打包发飞书。"""
+    if res.get("blocked"):
+        rep = res.get("report") or {}
+        issues = rep.get("issues") or rep.get("errors") or []
+        body = ("⛔ **校验未通过，未生成**（校验是生成前置）：\n"
+                + ("\n".join(f"　- {str(x)[:80]}" for x in issues[:8]) if issues else "见数据体检"))
+        card = cards.text_card("生成被拦截 · 先过校验", body, template="orange")
+        return {"card": card, "sent": _safe_send_card(chat_id, card), "blocked": True}
+    gen = res.get("generated") or []
+    errs = res.get("errors") or []
+    zpath = _deliver_docs(db, chat_id, batch, gen, title) if gen else None
+    body = (f"✅ 已生成 **{len(gen)}** 个文件"
+            + (f"，打包发群：`{os.path.basename(zpath)}`" if zpath else "") + "\n"
+            + "\n".join(f"　📄 {g.get('filename')}" for g in gen[:10])
+            + (f"\n⚠️ {len(errs)} 个问题：" + "；".join(str(e)[:50] for e in errs[:3]) if errs else ""))
+    card = cards.text_card(title, body, template="green" if gen else "orange")
+    return {"card": card, "sent": _safe_send_card(chat_id, card), "generated": len(gen)}
+
+
 def _act_gen_doc(db, chat_id, value):
-    """选模板卡【生成】→ generate_service.generate（校验通过才出文件）。"""
+    """选模板卡【生成】→ generate（校验通过才出文件）→ 打包发飞书。"""
     batch_id = (value or {}).get("batch_id")
     tid = (value or {}).get("template_id")
     b = db.get(Batch, batch_id) if batch_id else None
@@ -726,22 +771,31 @@ def _act_gen_doc(db, chat_id, value):
     except Exception as e:
         card = cards.text_card("生成失败", str(e)[:300], template="red")
         return {"card": card, "sent": _safe_send_card(chat_id, card), "action": "gen_doc"}
-    if res.get("blocked"):
-        rep = res.get("report") or {}
-        issues = rep.get("issues") or rep.get("errors") or []
-        body = ("⛔ **校验未通过，未生成**（校验是生成的前置）：\n"
-                + "\n".join(f"　- {str(x)[:80]}" for x in issues[:8]) if issues
-                else "⛔ 校验未通过，未生成。")
-        card = cards.text_card("生成被拦截 · 先过校验", body, template="orange")
-        return {"card": card, "sent": _safe_send_card(chat_id, card), "action": "gen_doc"}
-    gen = res.get("generated") or []
-    errs = res.get("errors") or []
-    body = (f"✅ 已生成 **{len(gen)}** 个文件\n"
-            + "\n".join(f"　📄 {g.get('label') or g.get('filename')}" for g in gen[:12])
-            + (f"\n⚠️ {len(errs)} 个问题：" + "；".join(str(e)[:60] for e in errs[:4]) if errs else ""))
-    card = cards.text_card("文件已生成", body, template="green" if gen else "orange")
-    return {"card": card, "sent": _safe_send_card(chat_id, card),
-            "action": "gen_doc", "generated": len(gen), "errors": len(errs)}
+    r = _finish_generate(db, chat_id, b, res, "文件已生成")
+    r["action"] = "gen_doc"
+    return r
+
+
+def _act_gen_docs_all(db, chat_id, batch_id):
+    """选模板卡【一键生成】→ 每个 doc_type 取首选模板，一次生成 → 打包发飞书。"""
+    b = db.get(Batch, batch_id) if batch_id else None
+    if b is None:
+        card = cards.text_card("生成文件", "批次不存在", template="red")
+        return {"card": card, "sent": _safe_send_card(chat_id, card), "action": "gen_docs_all"}
+    from ..services import template_service as ts, generate_service
+    data = ts.candidates_for_batch(db, b)
+    ids = [tmpls[0]["id"] for tmpls in (data.get("groups") or {}).values() if tmpls]
+    if not ids:
+        card = cards.text_card("一键生成", "没有可用模板。", template="orange")
+        return {"card": card, "sent": _safe_send_card(chat_id, card), "action": "gen_docs_all"}
+    try:
+        res = generate_service.generate(db, batch_id, ids)
+    except Exception as e:
+        card = cards.text_card("生成失败", str(e)[:300], template="red")
+        return {"card": card, "sent": _safe_send_card(chat_id, card), "action": "gen_docs_all"}
+    r = _finish_generate(db, chat_id, b, res, "一键生成")
+    r["action"] = "gen_docs_all"
+    return r
 
 
 def _act_fetch_labels(db, chat_id, value):

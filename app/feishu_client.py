@@ -100,6 +100,25 @@ def send_card(receive_id, card, receive_id_type="chat_id"):
     return _send(receive_id, receive_id_type, "interactive", card)
 
 
+def send_file(receive_id, file_path, receive_id_type="chat_id", file_name=None):
+    """发文件（zip/pdf/xlsx…）：先上传拿 file_key，再发 file 消息。返回 message_id。"""
+    import os
+    from lark_oapi.api.im.v1 import CreateFileRequest, CreateFileRequestBody
+    client = get_client()
+    name = file_name or os.path.basename(file_path)
+    ext = os.path.splitext(name)[1].lower().lstrip(".")
+    ftype = ext if ext in ("pdf", "doc", "docx", "xls", "xlsx", "ppt", "pptx") else "stream"
+    with open(file_path, "rb") as fh:
+        req = (CreateFileRequest.builder()
+               .request_body(CreateFileRequestBody.builder()
+                             .file_type(ftype).file_name(name).file(fh).build())
+               .build())
+        resp = client.im.v1.file.create(req)
+    if not resp.success():
+        raise RuntimeError(f"飞书上传文件失败 code={resp.code}: {resp.msg}")
+    return _send(receive_id, receive_id_type, "file", {"file_key": resp.data.file_key})
+
+
 def reply_text(message_id, text):
     """回复某条消息（thread 内）。"""
     return _reply(message_id, "text", {"text": text})

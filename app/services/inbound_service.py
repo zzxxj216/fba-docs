@@ -569,6 +569,51 @@ def build_for_batch(db, batch):
     return {"inbound_plan_id": pid, "option_count": len(out)}
 
 
+def materialize_placement(db, batch, placement_option_id):
+    """把选中分仓方案落成逐FC Shipment+ShipmentItem行（供生成文件，不碰亚马逊）。
+
+    各仓 SKU/数量取方案 by_sku；明细成本/箱规从原"未分仓"货件同SKU行复制。
+    保护：批次已是逐FC货件（fc_code 非空，如导入的真实批次）则跳过，绝不删真实数据。
+    """
+    import math as _math
+    from ..models import Shipment, ShipmentItem
+    already = [sp for sp in batch.shipments if (sp.fc_code or "").strip()]
+    if already:
+        return {"skipped": True, "reason": "已是逐FC货件",
+                "fcs": [sp.fc_code for sp in already]}
+    opts = json.loads(batch.placement_options or "[]")
+    opt = next((o for o in opts if o.get("placement_option_id") == placement_option_id), None)
+    if not opt:
+        raise RuntimeError(f"分仓方案 {placement_option_id} 不存在")
+    tmpl = {}                              # 原货件SKU模板（复制规格）
+    for sp in batch.shipments:
+        for it in sp.items:
+            tmpl.setdefault(it.msku, it)
+    spec_cols = ("product_id", "fnsku", "asin", "qty_per_box",
+                 "carton_l", "carton_w", "carton_h", "customs_unit_price", "purchase_cost")
+    for sp in list(batch.shipments):       # 清掉原"未分仓"货件
+        db.delete(sp)
+    db.flush()
+    made = []
+    for sh in opt.get("shipments") or []:
+        fc = sh.get("fc")
+        nsp = Shipment(batch_id=batch.id, fc_code=fc, status="已分仓")
+        db.add(nsp)
+        db.flush()
+        for msku, qty in (sh.get("by_sku") or {}).items():
+            ni = ShipmentItem(shipment_id=nsp.id, msku=msku, qty=qty)
+            src = tmpl.get(msku)
+            if src:
+                for c in spec_cols:
+                    setattr(ni, c, getattr(src, c, None))
+                if ni.qty_per_box:
+                    ni.box_count = _math.ceil((qty or 0) / ni.qty_per_box)
+            db.add(ni)
+        made.append({"fc": fc, "skus": len(sh.get("by_sku") or {})})
+    db.commit()
+    return {"materialized": made}
+
+
 def confirm_placement_for_batch(db, batch, placement_option_id, *, live=False):
     """选定后：对批次确认某分仓方案 → 生成 FC 货件 → 配自送运输 → 回填货件。
 
@@ -591,6 +636,11 @@ def confirm_placement_for_batch(db, batch, placement_option_id, *, live=False):
             "placement_option_id": placement_option_id, "fcs": fcs,
             "steps": ["确认分仓方案(生成货件)", "生成运输方案(自送)",
                       "选自送承运人并确认", "回填货件 FC/确认号"]}
+    # 回填逐FC货件行（本地，不碰亚马逊）→ 让后续"生成文件"有数据
+    try:
+        plan["materialized"] = materialize_placement(db, batch, placement_option_id)
+    except Exception as e:
+        plan["materialize_error"] = str(e)[:120]
     if not live:
         plan["dry_run"] = True
         return plan                       # 🛑 演练：到此为止，不碰亚马逊

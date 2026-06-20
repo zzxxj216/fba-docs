@@ -321,6 +321,9 @@ def docs_card(batch_name, batch_id, data):
                 "elements": [head, {"tag": "div", "text": {"tag": "lark_md",
                             "content": "没有可用模板。先在模板库上传/给店铺挂模板。"}}]}
     elements = [head]
+    elements.append({"tag": "action", "actions": [
+        _btn("📦 一键生成(每类首选)", "gen_docs_all", {"batch_id": batch_id}, btn_type="primary"),
+    ]})
     for dt, tmpls in groups.items():
         elements.append({"tag": "hr"})
         elements.append({"tag": "div", "text": {"tag": "lark_md", "content": f"**{dt}**"}})
