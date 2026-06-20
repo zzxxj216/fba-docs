@@ -19,7 +19,8 @@ from ..models import Batch, Brand, Inquiry
 
 # 意图集合：restock=看本周补货/待采购（赛狐）；intake=建仓就绪体检/看待办；
 # inquiry=发起询价；compare=看比价；help/unknown
-INTENTS = ("restock", "intake", "summary", "inquiry", "compare", "fill_data", "help", "unknown")
+INTENTS = ("restock", "intake", "summary", "inquiry", "compare", "labels",
+           "fill_data", "help", "unknown")
 
 # 主流程 agent 人设：专注亚马逊 FBA 全程管理的内部助手。寒暄/泛问时按它对话（认人+能力+引导）。
 AGENT_PERSONA = (
@@ -45,6 +46,7 @@ _KEYWORDS = {
     "summary": ["汇总", "本周汇总", "整包", "分仓汇总", "汇总询价"],
     "inquiry": ["询价", "报价", "发货代", "找货代"],
     "compare": ["比价", "对比", "哪家", "选货代", "报价对比"],
+    "labels": ["箱唛", "标签", "打标", "fnsku", "FNSKU", "贴标", "条码", "下载标签"],
     "fill_data": ["补数据", "缺数据", "补全", "补资料"],
     "help": ["帮助", "怎么用", "help", "你能做"],
 }
@@ -64,6 +66,7 @@ def parse_intent(text):
                    "restock(看本周补货/待采购/补仓计划——从赛狐拉补货数据)、"
                    "intake(看建仓待办/建仓就绪体检——已有批次能不能建仓)、"
                    "summary(看本周整包询价汇总——所有已建仓批次的分仓FC汇总到一起)、"
+                   "labels(下载箱唛/FNSKU标签、打标贴标)、"
                    "inquiry(发起询价)、compare(看货代比价)、"
                    "fill_data(补全数据)、help(帮助)、unknown。"
                    "注意区分：『看补货/待采购/补仓计划』是 restock；『看待办/建仓体检/开始建仓』是 intake。"
@@ -456,6 +459,13 @@ def handle_message(db, *, chat_id, open_id=None, user_id=None, text=""):
         return {"card": card, "sent": _safe_send_card(chat_id, card),
                 "operator": op.id, "intent": "compare", "forwarders": data.get("forwarders")}
 
+    # 标签下载：列已建仓批次 → 箱唛/FNSKU 下载剪切
+    if intent["intent"] == "labels":
+        built = [{"batch_id": bt.id, "name": bt.name} for bt, _ in _weekly_built_batches(db, op)]
+        card = cards.labels_card(op.name or "运营", built)
+        return {"card": card, "sent": _safe_send_card(chat_id, card),
+                "operator": op.id, "intent": "labels", "batches": len(built)}
+
     # 明确"看建仓待办 / 建仓就绪体检"诉求 → 建仓待办卡片
     if intent["intent"] == "intake":
         data = intake.build_intake(db, op, chat_id, open_id or "")
@@ -495,6 +505,8 @@ def handle_action(db, *, chat_id, open_id, action, value):
         return _act_choose_weekly(db, chat_id, open_id, value)
     if action == "commit_placement":
         return _act_commit_placement(db, chat_id, value)
+    if action == "fetch_labels":
+        return _act_fetch_labels(db, chat_id, value)
     if action == "confirm_purchase":
         return _act_confirm_purchase(db, chat_id, open_id, value)
     if action == "build":
@@ -681,6 +693,39 @@ def _act_commit_placement(db, chat_id, value):
         card = cards.text_card("分仓已提交 + 自送已配", body, template="green")
     return {"card": card, "sent": _safe_send_card(chat_id, card),
             "action": "commit_placement", "dry_run": plan.get("dry_run", True)}
+
+
+def _act_fetch_labels(db, chat_id, value):
+    """标签卡片【箱唛】/【FNSKU】→ inbound_service.fetch_labels（默认演练，不碰亚马逊）。"""
+    batch_id = (value or {}).get("batch_id")
+    kind = (value or {}).get("kind") or "box"
+    b = db.get(Batch, batch_id) if batch_id else None
+    if b is None:
+        card = cards.text_card("标签下载", "批次不存在", template="red")
+        return {"card": card, "sent": _safe_send_card(chat_id, card), "action": "fetch_labels"}
+    live = os.getenv("INBOUND_LIVE_SUBMIT") == "1"
+    kname = "箱唛" if kind == "box" else "FNSKU 商品标签"
+    try:
+        from ..services import inbound_service as ib
+        plan = ib.fetch_labels(db, b, kind=kind, live=live)
+    except Exception as e:
+        card = cards.text_card("标签下载失败", str(e)[:300], template="red")
+        return {"card": card, "sent": _safe_send_card(chat_id, card), "action": "fetch_labels"}
+    if plan.get("dry_run"):
+        body = (f"🧪 **演练（未真实下载）**　{kname}\n页型 `{plan.get('page_type')}`\n"
+                f"将执行：{' → '.join(plan.get('steps') or [])}\n\n"
+                "真实下载需运维开 `INBOUND_LIVE_SUBMIT=1`；下载后自动剪切成单张 PDF。")
+        card = cards.text_card("标签下载 · 演练", body, template="blue")
+    else:
+        saved = plan.get("saved") or []
+        total = sum(s.get("labels") or 0 for s in saved)
+        body = (f"✅ {kname} 已下载并剪切：**{total}** 张单标签\n"
+                f"归档目录：`{plan.get('out_dir')}`\n"
+                + "\n".join(f"　{s.get('shipment', 'FNSKU')}：{s.get('labels')} 张 → {os.path.basename(s.get('cut_pdf', ''))}"
+                            for s in saved[:15]))
+        card = cards.text_card("标签已下载（已剪切单张）", body, template="green")
+    return {"card": card, "sent": _safe_send_card(chat_id, card),
+            "action": "fetch_labels", "dry_run": plan.get("dry_run", True)}
 
 
 def _act_choose_weekly(db, chat_id, open_id, value):

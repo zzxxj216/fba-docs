@@ -310,6 +310,35 @@ def weekly_comparison_card(comparison):
             "elements": elements}
 
 
+def labels_card(operator_name, batches):
+    """标签下载卡片：列已建仓批次，每批可下载箱唛/FNSKU（自动剪切成单张给货代）。
+
+    batches: [{batch_id, name}]
+    """
+    head = {"tag": "div", "text": {"tag": "lark_md",
+            "content": f"**{operator_name}**，已建仓批次的标签下载（多合一页自动**剪切成单张**给货代）："}}
+    if not batches:
+        return {"config": {"wide_screen_mode": True},
+                "header": _header("🏷️ 标签下载", "indigo"),
+                "elements": [head, {"tag": "div", "text": {"tag": "lark_md",
+                            "content": "暂无已建仓批次。"}}]}
+    elements = [head]
+    for b in batches:
+        elements.append({"tag": "hr"})
+        elements.append({"tag": "div", "text": {"tag": "lark_md",
+                        "content": f"📦 **{b.get('name')}**"}})
+        elements.append({"tag": "action", "actions": [
+            _btn("📦 箱唛", "fetch_labels", {"batch_id": b.get("batch_id"), "kind": "box"}),
+            _btn("🏷️ FNSKU 商品标签", "fetch_labels", {"batch_id": b.get("batch_id"), "kind": "fnsku"}),
+        ]})
+    elements.append({"tag": "hr"})
+    elements.append({"tag": "note", "elements": [{"tag": "plain_text",
+                    "content": "默认演练；真实下载需开 INBOUND_LIVE_SUBMIT=1。下载后已剪切成单张 PDF"}]})
+    return {"config": {"wide_screen_mode": True},
+            "header": _header("🏷️ 标签下载（剪切单张）", "indigo"),
+            "elements": elements}
+
+
 def inquiry_drafted_card(batch_name, inquiry_id, content, forwarder_names):
     """询价已起草卡片：展示待人工确认的正文 + 【确认群发】【取消】按钮。
 

@@ -647,6 +647,68 @@ def _pick_self_delivery(all_opts, shipment_id):
     return None
 
 
+def fetch_labels(db, batch, kind="box", page_type=None, live=False):
+    """下载并剪切标签：kind=box 箱唛 / fnsku 商品标签。多合一页按页型切成单张供货代。
+
+    **live=False（默认）演练，不碰亚马逊**；live=True 走 mcapi 取下载链接→下载→剪切→归档。
+    """
+    from ..database import OUTPUT_DIR
+    from ..modules import label_tools as lt
+    pid = batch.inbound_plan_id
+    if not pid:
+        raise RuntimeError("批次未建仓（无 inbound_plan_id）")
+    store = _store(db, batch.brand_id) or None
+    page_type = page_type or ("PackageLabel_Letter_6" if kind == "box" else "LETTER_30")
+    plan = {"batch": batch.name, "kind": kind, "page_type": page_type, "inbound_plan_id": pid,
+            "steps": ["取标签下载链接", "下载 PDF", "按页型剪切成单张", "归档"]}
+    if not live:
+        plan["dry_run"] = True
+        return plan                       # 🛑 演练：到此为止，不碰亚马逊
+    out_dir = os.path.join(OUTPUT_DIR, re.sub(r'[\\/:*?"<>|]', "_", batch.name or f"batch{batch.id}"), "labels")
+    os.makedirs(out_dir, exist_ok=True)
+    saved = []
+
+    def _url(resp):
+        resp = resp or {}
+        return resp.get("DownloadURL") or resp.get("downloadURL") or resp.get("url")
+
+    if kind == "box":
+        p = fba.call("GET", f"/inbound-plans/{pid}", store=store) or {}
+        for sh in (p.get("shipments") or []):
+            conf = sh.get("shipmentConfirmationId")
+            if not conf:
+                continue
+            boxes = fba.call("GET", f"/inbound-plans/{pid}/shipments/{sh.get('shipmentId')}/boxes",
+                             store=store) or {}
+            n_boxes = len(boxes.get("boxes") or []) or None
+            params = {"PageType": page_type, "LabelType": "BARCODE_2D"}
+            if n_boxes:                    # 非合作承运(自送)货件 PageSize 必填
+                params["PageSize"] = n_boxes
+                params["PageStartIndex"] = 0
+            url = _url(fba.call("GET", f"/shipments/{conf}/labels", params=params, store=store))
+            if not url:
+                continue
+            raw = os.path.join(out_dir, f"{conf}_原始.pdf")
+            cut = os.path.join(out_dir, f"{conf}_单张.pdf")
+            lt.download_pdf(url, raw)
+            n = lt.cut_by_page_type(raw, cut, page_type)
+            saved.append({"shipment": conf, "boxes": n_boxes, "cut_pdf": cut, "labels": n})
+    else:  # fnsku
+        items = [{"msku": it.msku, "quantity": it.qty}
+                 for sp in batch.shipments for it in sp.items if (it.qty or 0) > 0]
+        url = _url(fba.call("POST", "/item-labels", store=store,
+                            json={"label_type": "STANDARD_FORMAT", "page_type": page_type,
+                                  "msku_quantities": items}))
+        if url:
+            raw = os.path.join(out_dir, "fnsku_原始.pdf")
+            cut = os.path.join(out_dir, "fnsku_单张.pdf")
+            lt.download_pdf(url, raw)
+            n = lt.cut_by_page_type(raw, cut, page_type)
+            saved.append({"cut_pdf": cut, "labels": n})
+    plan.update({"dry_run": False, "saved": saved, "out_dir": out_dir})
+    return plan
+
+
 def _backfill_shipments(batch, pid, shipment_ids, store):
     """读确认后的 FC 货件(fc/地址/确认号)返回（持久化到 Shipment 留给发托书环节）。"""
     out = []

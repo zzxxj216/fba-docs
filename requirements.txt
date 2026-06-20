@@ -8,3 +8,4 @@ anthropic
 python-dotenv
 pymysql
 cryptography
+PyMuPDF>=1.24
