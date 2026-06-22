@@ -899,13 +899,26 @@ def _act_choose_batch_forwarder(db, chat_id, value):
     except Exception as e:
         card = cards.text_card("选定失败", str(e)[:250], template="red")
         return {"card": card, "sent": _safe_send_card(chat_id, card), "action": "choose_batch_forwarder"}
-    b.status = "已选货代"
-    db.commit()
-    tag = "🧪 演练（未提交亚马逊）" if plan.get("dry_run") else "✅ 已提交分仓+配自送"
-    body = (f"**{b.name}** 选定货代 **{fname}**\n"
-            f"方案 `{oid}`　仓：{('、'.join(plan.get('fcs') or [])) or '—'}\n{tag}"
-            + ("" if plan.get("dry_run") else f"（{len(plan.get('shipments') or [])} 货件）"))
-    card = cards.text_card("已选定货代 · 按批次", body, template="green")
+    if plan.get("already_submitted"):       # 该批已提交过，防重复
+        ships = plan.get("shipments") or []
+        body = (f"ℹ️ **{b.name}** 已提交过亚马逊，无需重复。\n"
+                + "\n".join(f"　🏬 {s.get('fc')}　{s.get('confirmationId') or ''}　{s.get('status') or ''}"
+                            for s in ships[:15]))
+        card = cards.text_card("该批已提交", body, template="orange")
+        return {"card": card, "sent": _safe_send_card(chat_id, card), "action": "choose_batch_forwarder"}
+    if not plan.get("dry_run"):
+        b.status = "运输已配置"
+        db.commit()
+        body = (f"✅ **{b.name}** 选定货代 **{fname}** · 已真实提交亚马逊\n"
+                f"仓：{('、'.join(plan.get('fcs') or [])) or '—'}\n"
+                + "\n".join(f"　🏬 {s.get('fc')}　{s.get('confirmationId') or ''}　{s.get('status') or ''}"
+                            for s in (plan.get('shipments') or [])[:15]))
+        card = cards.text_card("已提交亚马逊 · 按批次", body, template="green")
+    else:
+        body = (f"🧪 **{b.name}** 选定货代 **{fname}**（演练，未提交亚马逊）\n"
+                f"方案 `{oid}`　仓：{('、'.join(plan.get('fcs') or [])) or '—'}\n"
+                "真实提交需运维开 INBOUND_LIVE_SUBMIT=1")
+        card = cards.text_card("已选定货代 · 演练", body, template="blue")
     return {"card": card, "sent": _safe_send_card(chat_id, card),
             "action": "choose_batch_forwarder", "live": live}
 

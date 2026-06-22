@@ -645,6 +645,14 @@ def confirm_placement_for_batch(db, batch, placement_option_id, *, live=False):
     if not live:
         plan["dry_run"] = True
         return plan                       # 🛑 演练：到此为止，不碰亚马逊
+    # 防重复提交：已提交过(运输已配置/已选货代/已发托书/完成)的批次直接返回，不再确认分仓
+    if (batch.status or "") in ("运输已配置", "已选货代", "已发托书", "完成"):
+        plan.update({"dry_run": False, "already_submitted": True,
+                     "shipments": _backfill_shipments(batch, pid,
+                                  [s.get("shipmentId") for s in (
+                                      (fba.call("GET", f"/inbound-plans/{pid}", store=store) or {}).get("shipments") or [])],
+                                  store)})
+        return plan
     # ===== 以下真实写亚马逊，仅 live=True =====
     c = fba.call("POST", f"/inbound-plans/{pid}/placement-options/{placement_option_id}/confirm", store=store)
     fba.wait_operation(c["operationId"], store=store, timeout=300)
