@@ -369,8 +369,10 @@ def weekly_comparison_from_db(db, op):
             ids = json.loads(op.scope_brand_ids) or []
         except (ValueError, TypeError):
             ids = []
-    inq = None
-    for cand in db.query(Inquiry).order_by(Inquiry.id.desc()).limit(60).all():
+    # 本周所有"整包询价"(按货代分，可能多条)→ 汇总各货代报价
+    inq_ids = []
+    for cand in (db.query(Inquiry).filter(Inquiry.created_at >= _current_week_start())
+                 .order_by(Inquiry.id.desc()).all()):
         try:
             st = json.loads(cand.structured or "{}")
         except (ValueError, TypeError):
@@ -381,12 +383,11 @@ def weekly_comparison_from_db(db, op):
             b = db.get(Batch, cand.batch_id)
             if not ids or (b and b.brand_id not in ids):
                 continue
-        inq = cand
-        break
-    if inq is None:
-        return {"inquiry": None, "ref_code": "", "comparison": [], "forwarders": 0}
+        inq_ids.append(cand.id)
+    if not inq_ids:
+        return {"inquiries": [], "comparison": [], "forwarders": 0}
     quotes = {}
-    for qt in db.query(InquiryQuote).filter(InquiryQuote.inquiry_id == inq.id).all():
+    for qt in db.query(InquiryQuote).filter(InquiryQuote.inquiry_id.in_(inq_ids)).all():
         frates = {}
         for ln in qt.lines:
             fc = (ln.fc or "").upper()
@@ -396,8 +397,8 @@ def weekly_comparison_from_db(db, op):
                           "currency": ln.currency or "USD"}
         if frates:
             name = qt.forwarder.name if qt.forwarder else f"货代#{qt.forwarder_id}"
-            quotes[name] = frates
-    return {"inquiry": inq.id, "ref_code": inq.ref_code,
+            quotes.setdefault(name, {}).update(frates)
+    return {"inquiries": inq_ids,
             "comparison": weekly_comparison(db, op, quotes), "forwarders": len(quotes)}
 
 
@@ -605,16 +606,34 @@ def _act_view_placement(db, chat_id, batch_id):
             "action": "view_placement", "options": len(opts)}
 
 
-def _weekly_draft_text(summary):
-    """整包询价正文（汇总各店铺全部 FC）。"""
-    lines = ["老师好，本周一批 FBA 头程货需要整体询价，目的仓及货量如下："]
+def _simple_inquiry_text(lanes, ref):
+    """简洁询价正文：开头直接、**只列仓号(箱/kg)、不带店铺名**。"""
+    fcs = "、".join(f"{l['fc']}({l.get('boxes', 0)}箱/{l.get('weight_kg', 0)}kg)" for l in lanes)
+    return (f"老师好，麻烦这几个仓报下头程价格：\n{fcs}\n"
+            f"（每个仓 单价/单位、时效、截关、月度报关费；暗号 {ref}）")
+
+
+def _inquiry_groups(db, summary):
+    """按货代分组本周批次的目的仓：{fid: {fwd, lanes:{fc:{fc,boxes,weight_kg}}, batches:[Batch]}}。
+
+    每家货代只收它**绑定店铺**的仓；多个店铺绑同一货代→合并到一组；
+    一个店铺绑多货代→每家都收到该店铺的仓（多家比价）。
+    """
+    groups = {}
     for b in summary.get("batches") or []:
-        fcs = "、".join(f"{f['fc']}({f.get('boxes', 0)}箱/{f.get('weight_kg', 0)}kg)"
-                       for f in (b.get("fcs") or []))
-        lines.append(f"【{b.get('store') or b.get('name')}】{fcs}")
-    lines.append("麻烦按每个目的仓分别报：运费单价(币种/单位)、渠道、时效、截关、起送费；"
-                 "另外贵司月度报关费怎么收?多谢～")
-    return "\n".join(lines)
+        bt = db.get(Batch, b["batch_id"])
+        if bt is None:
+            continue
+        for f in _brand_forwarders(db, bt.brand_id):
+            g = groups.setdefault(f.id, {"fwd": f, "lanes": {}, "batches": []})
+            if bt.id not in [x.id for x in g["batches"]]:
+                g["batches"].append(bt)
+            for fc in (b.get("fcs") or []):
+                cur = g["lanes"].get(fc["fc"]) or {"fc": fc["fc"], "boxes": 0, "weight_kg": 0.0}
+                cur["boxes"] = max(cur["boxes"], fc.get("boxes") or 0)
+                cur["weight_kg"] = max(cur["weight_kg"], fc.get("weight_kg") or 0)
+                g["lanes"][fc["fc"]] = cur
+    return groups
 
 
 def _act_weekly_summary(db, chat_id, open_id):
@@ -631,25 +650,20 @@ def _act_weekly_summary(db, chat_id, open_id):
 
 
 def _act_weekly_inquiry(db, chat_id, open_id):
-    """汇总卡片【整包询价】→ 起草整包询价正文 → 待确认卡片（不自动群发，红线）。"""
+    """汇总卡片【整包询价】→ 按货代分组起草（每家只它绑定店铺的仓、只列仓号）→ 待确认。"""
     op = intake.identify_operator(db, open_id=open_id)
     summary = build_weekly_summary(db, op)
-    if not summary.get("batches"):
-        card = cards.text_card("整包询价", "本周还没有已建仓批次,先建仓再汇总询价。", template="orange")
+    groups = _inquiry_groups(db, summary)
+    if not groups:
+        card = cards.text_card("整包询价", "本周无已建仓批次 / 批次品牌没绑货代。", template="orange")
         return {"card": card, "sent": _safe_send_card(chat_id, card), "action": "weekly_inquiry"}
-    # 预览将发给哪些货代（本周各批次品牌绑定的货代，去重）
-    fwd_names = []
-    seen = set()
-    for b in summary["batches"]:
-        bt = db.get(Batch, b["batch_id"])
-        for f in (_brand_forwarders(db, bt.brand_id) if bt else []):
-            if f.id not in seen:
-                seen.add(f.id)
-                fwd_names.append(f.name)
-    draft = _weekly_draft_text(summary)
-    body = (f"**整包询价草稿**（{summary['batch_count']} 批 · {summary['fc_count']} 个目的仓）\n"
-            f"**将发给**：{('、'.join(fwd_names)) or '（无绑定货代）'}\n\n{draft}")
-    card = cards.text_card("整包询价 · 待确认", body, template="orange")
+    from datetime import date
+    parts = ["**整包询价草稿**（按货代分组，每家只发它绑定店铺的仓）："]
+    for fid, g in groups.items():
+        lanes = list(g["lanes"].values())
+        ref = f"INQ-周{date.today().strftime('%m%d')}-{fid}"
+        parts.append(f"\n──「{g['fwd'].name}」（{len(lanes)} 个仓）──\n" + _simple_inquiry_text(lanes, ref))
+    card = cards.text_card("整包询价 · 待确认", "\n".join(parts), template="orange")
     card["elements"].append({"tag": "action", "actions": [
         _btn_dict("✅ 确认群发货代", "weekly_inquiry_send", {}, "primary"),
     ]})
@@ -657,45 +671,38 @@ def _act_weekly_inquiry(db, chat_id, open_id):
 
 
 def _act_weekly_inquiry_send(db, chat_id, open_id):
-    """【确认群发货代】→ 把整包询价正文真发给本周各批次绑定的货代（企微）。"""
+    """【确认群发货代】→ 按货代分别群发：每家只发它绑定店铺的仓（合并多店铺、只列仓号）。"""
     op = intake.identify_operator(db, open_id=open_id)
     summary = build_weekly_summary(db, op)
-    if not summary.get("batches"):
-        card = cards.text_card("整包询价", "本周无已建仓批次。", template="orange")
-        return {"card": card, "sent": _safe_send_card(chat_id, card), "action": "weekly_inquiry_send"}
-    # 合并目的仓 lanes（去重，箱数/重量取最大）+ 去重货代 + 代表批次集
-    batches, lanes_map, fwds = [], {}, {}
-    for b in summary["batches"]:
-        bt = db.get(Batch, b["batch_id"])
-        if bt is None:
-            continue
-        batches.append(bt)
-        for f in (b.get("fcs") or []):
-            fc = f.get("fc")
-            cur = lanes_map.get(fc) or {"fc": fc, "boxes": 0, "weight_kg": 0.0}
-            cur["boxes"] = max(cur["boxes"], f.get("boxes") or 0)
-            cur["weight_kg"] = max(cur["weight_kg"], f.get("weight_kg") or 0)
-            lanes_map[fc] = cur
-        for fwd in _brand_forwarders(db, bt.brand_id):
-            fwds[fwd.id] = fwd
-    if not batches:
-        card = cards.text_card("整包询价", "没有可询价批次。", template="orange")
+    groups = _inquiry_groups(db, summary)
+    if not groups:
+        card = cards.text_card("整包询价", "本周无已建仓批次 / 没绑货代。", template="orange")
         return {"card": card, "sent": _safe_send_card(chat_id, card), "action": "weekly_inquiry_send"}
     from datetime import date
     from ..services import inquiry_service as inq_svc
-    ref = f"INQ-周{date.today().strftime('%m%d')}-{batches[0].id}"
-    draft = _weekly_draft_text(summary) + f"\n（报价请带上暗号 {ref}，方便归属）"
-    inq = inq_svc.start_weekly_inquiry(db, batches, list(lanes_map.values()), list(fwds), draft, ref)
-    res = inq_svc.send_inquiry(db, inq.id)
-    sent = [r["name"] for r in res["results"] if r.get("sent")]
-    failed = [f"{r['name']}({str(r.get('error', ''))[:30]})" for r in res["results"] if not r.get("sent")]
-    body = (f"✅ 整包询价已群发 **{len(sent)}** 家货代：{('、'.join(sent)) or '（无绑定货代）'}\n"
-            f"暗号 `{ref}`\n"
-            + (f"⚠️ 失败：{('；'.join(failed))}\n" if failed else "")
-            + "货代回价会**自动提取入库**；发「比价」看整包比价。")
-    card = cards.text_card("整包询价已发出", body, template="green" if sent else "red")
+    lines, total_ok = [], 0
+    for fid, g in groups.items():
+        lanes = list(g["lanes"].values())
+        ref = f"INQ-周{date.today().strftime('%m%d')}-{fid}"
+        draft = _simple_inquiry_text(lanes, ref)
+        try:
+            inq = inq_svc.start_weekly_inquiry(db, g["batches"], lanes, [fid], draft, ref)
+            res = inq_svc.send_inquiry(db, inq.id)
+            ok = any(r.get("sent") for r in res["results"])
+        except Exception as e:
+            ok = False
+            res = {"results": [{"error": str(e)[:40]}]}
+        total_ok += 1 if ok else 0
+        if ok:
+            lines.append(f"✅ {g['fwd'].name}：{len(lanes)} 个仓")
+        else:
+            errs = "；".join(str(r.get("error", ""))[:30] for r in res["results"] if not r.get("sent"))
+            lines.append(f"⚠️ {g['fwd'].name}：发送失败 {errs}")
+    body = (f"整包询价已**按货代分别**群发（{total_ok}/{len(groups)} 家成功）：\n" + "\n".join(lines)
+            + "\n\n货代各自只收到自己店铺的仓；回价会自动提取入库，发「比价」看比价。")
+    card = cards.text_card("整包询价已发出", body, template="green" if total_ok else "red")
     return {"card": card, "sent": _safe_send_card(chat_id, card),
-            "action": "weekly_inquiry_send", "inquiry_id": inq.id, "sent_count": len(sent)}
+            "action": "weekly_inquiry_send", "sent_count": total_ok}
 
 
 def _act_commit_placement(db, chat_id, value):
