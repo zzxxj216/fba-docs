@@ -313,47 +313,45 @@ def _weekly_built_batches(db, op):
 
 
 def weekly_comparison(db, op, quotes):
-    """整包比价（方案B）：给各货代逐 FC 头程报价，算每家承接整包的总价。
+    """按批次比价：每个批次，在"报价能全覆盖它某分仓方案"的货代里，比 placement费+头程 总成本。
 
-    quotes: {货代名: {FC: {"rate": float, "unit": "/kg"|"/box", "currency": "USD"}}}
-    每批挑成本最低且全覆盖的分仓方案(placement费 + 该方案各FC头程)；
-    货代整包总价 = Σ各批最优方案。返回按总价排序的列表（缺仓不全覆盖的排后）。
+    quotes: {货代名: {FC: {rate, unit, currency}}}
+    返回按批次 [{batch_id, batch, store, candidates:[{forwarder, option, option_id, fee, head_haul,
+      total, currency, recommended}]（已按 total 升序，最低 recommended=True）}]。
+    一店铺多货代 → 同批多个 candidate 比价；单货代 → 一个 candidate。
     """
     batches = _weekly_built_batches(db, op)
     result = []
-    for fname, frates in (quotes or {}).items():
-        currency = next((v.get("currency", "USD") for v in frates.values()), "USD")
-        per_batch, grand_total, full = [], 0.0, True
-        for b, opts in batches:
+    for b, opts in batches:
+        brand = db.get(Brand, b.brand_id) if b.brand_id else None
+        cands = []
+        for fname, frates in (quotes or {}).items():
+            cur = next((v.get("currency", "USD") for v in frates.values()), "USD")
             best = None
             for o in opts:
-                head, miss = 0.0, []
+                head, miss = 0.0, False
                 for s in (o.get("shipments") or []):
-                    fc = s.get("fc")
-                    r = frates.get(fc)
+                    r = frates.get(s.get("fc"))
                     if not r:
-                        miss.append(fc)
-                        continue
+                        miss = True
+                        break
                     qty = (s.get("weight_kg") or 0) if "kg" in r.get("unit", "") else (s.get("boxes") or 0)
                     head += qty * (r.get("rate") or 0)
+                if miss:
+                    continue                     # 该货代没全覆盖这个方案
                 total = (o.get("fee_usd") or 0) + head
-                if not miss and (best is None or total < best["total"]):
+                if best is None or total < best["total"]:
                     best = {"option": o.get("label"), "option_id": o.get("placement_option_id"),
-                            "fee": round(o.get("fee_usd") or 0, 1),
-                            "head_haul": round(head, 1), "total": round(total, 1)}
-            if best is None:
-                full = False
-                per_batch.append({"batch": b.name, "batch_id": b.id,
-                                  "error": "所有方案都有缺仓未报价"})
-            else:
-                grand_total += best["total"]
-                per_batch.append({"batch": b.name, "batch_id": b.id, **best})
-        result.append({"forwarder": fname, "currency": currency,
-                       "total": round(grand_total, 1), "coverage_ok": full,
-                       "per_batch": per_batch})
-    result.sort(key=lambda x: (not x["coverage_ok"], x["total"]))
-    for i, r in enumerate(result):
-        r["recommended"] = (i == 0 and r["coverage_ok"])
+                            "fee": round(o.get("fee_usd") or 0, 1), "head_haul": round(head, 1),
+                            "total": round(total, 1), "currency": cur}
+            if best:
+                cands.append({"forwarder": fname, **best})
+        cands.sort(key=lambda x: x["total"])
+        for i, c in enumerate(cands):
+            c["recommended"] = (i == 0)
+        result.append({"batch_id": b.id, "batch": b.name,
+                       "store": b.shop_name or (brand.name if brand else ""),
+                       "candidates": cands})
     return result
 
 
@@ -520,6 +518,8 @@ def handle_action(db, *, chat_id, open_id, action, value):
         return _act_weekly_inquiry_send(db, chat_id, open_id)
     if action == "choose_weekly":
         return _act_choose_weekly(db, chat_id, open_id, value)
+    if action == "choose_batch_forwarder":
+        return _act_choose_batch_forwarder(db, chat_id, value)
     if action == "commit_placement":
         return _act_commit_placement(db, chat_id, value)
     if action == "fetch_labels":
@@ -878,6 +878,33 @@ def _act_fetch_labels(db, chat_id, value):
             "action": "fetch_labels", "dry_run": plan.get("dry_run", True)}
 
 
+def _act_choose_batch_forwarder(db, chat_id, value):
+    """比价卡【选定货代】(按批次)→ 该批锁定该货代 + 其最优分仓方案 → confirm_placement（默认演练）。"""
+    batch_id = (value or {}).get("batch_id")
+    fname = (value or {}).get("forwarder") or "?"
+    oid = (value or {}).get("option_id")
+    b = db.get(Batch, batch_id) if batch_id else None
+    if b is None or not oid:
+        card = cards.text_card("选定货代", "批次或方案缺失", template="red")
+        return {"card": card, "sent": _safe_send_card(chat_id, card), "action": "choose_batch_forwarder"}
+    live = os.getenv("INBOUND_LIVE_SUBMIT") == "1"
+    from ..services import inbound_service as ib
+    try:
+        plan = ib.confirm_placement_for_batch(db, b, oid, live=live)
+    except Exception as e:
+        card = cards.text_card("选定失败", str(e)[:250], template="red")
+        return {"card": card, "sent": _safe_send_card(chat_id, card), "action": "choose_batch_forwarder"}
+    b.status = "已选货代"
+    db.commit()
+    tag = "🧪 演练（未提交亚马逊）" if plan.get("dry_run") else "✅ 已提交分仓+配自送"
+    body = (f"**{b.name}** 选定货代 **{fname}**\n"
+            f"方案 `{oid}`　仓：{('、'.join(plan.get('fcs') or [])) or '—'}\n{tag}"
+            + ("" if plan.get("dry_run") else f"（{len(plan.get('shipments') or [])} 货件）"))
+    card = cards.text_card("已选定货代 · 按批次", body, template="green")
+    return {"card": card, "sent": _safe_send_card(chat_id, card),
+            "action": "choose_batch_forwarder", "live": live}
+
+
 def _act_choose_weekly(db, chat_id, open_id, value):
     """整包比价【选定这家】→ 记录选定货代（本地留痕）。
 
@@ -1015,10 +1042,18 @@ def _act_bulk_confirm_purchase(db, chat_id, open_id):
             lines.append(f"⚠️ {r['pgn']}（{r['shop']}）→ 停在「{r['stopped']}」：{r['steps'][-1][:60]}")
     if review:
         lines.append(f"\nℹ️ 另有 **{len(review)}** 个待审核未处理，请先去赛狐审核后再采购。")
+    if ok:
+        lines.append("\n📤 已自动发起整包询价（按货代分别发，见下条卡片）。")
     card = cards.text_card(f"一键采购 {ok}/{len(to_purchase)} 完成", "\n".join(lines),
                            template="green" if ok else "orange")
-    return {"card": card, "sent": _safe_send_card(chat_id, card),
-            "action": "bulk_confirm_purchase", "ok": ok, "total": len(to_purchase)}
+    r0 = {"card": card, "sent": _safe_send_card(chat_id, card),
+          "action": "bulk_confirm_purchase", "ok": ok, "total": len(to_purchase)}
+    if ok:                                  # 一键采购后自动询价（按货代分组发）
+        try:
+            _act_weekly_inquiry_send(db, chat_id, open_id)
+        except Exception:
+            pass
+    return r0
 
 
 def _act_confirm_purchase(db, chat_id, open_id, value):

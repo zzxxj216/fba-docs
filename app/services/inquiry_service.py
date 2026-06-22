@@ -450,11 +450,20 @@ def _notify_operator_quote(db, inq, fwd, total, currency, covered, want_n, missi
     msg = (f"💰 {fwd.name} 回价：覆盖 {covered}/{want_n} 个仓"
            + (f"，整包约 {total} {currency}" if total is not None else "")
            + (f"；还缺 {('、'.join(missing))}（已自动提醒货代补报）" if missing
-              else "；已报全，可发「比价」选货代"))
+              else "；已报全 👇 直接按批次选货代"))
     try:
         fc.send_text(target.feishu_open_id, msg, receive_id_type="open_id")
     except Exception:
         pass
+    if not missing:                 # 该货代报全 → 自动把"按批次比价卡"推给运营选（不用手动发「比价」）
+        try:
+            from ..feishu import service as fsvc, cards as fcards
+            comp = (fsvc.weekly_comparison_from_db(db, target) or {}).get("comparison") or []
+            if comp:
+                fc.send_card(target.feishu_open_id, fcards.weekly_comparison_card(comp),
+                             receive_id_type="open_id")
+        except Exception:
+            pass
 
 
 # ---------------------------------------------------------------- 提取 → QuoteLine
