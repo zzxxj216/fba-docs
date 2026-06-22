@@ -71,6 +71,25 @@ def _num_str(v):
     return str(v)
 
 
+def _arrival_date(v, default_days=7):
+    """预计到货时间 → yyyy-MM-dd（赛狐要求）。空/无效 → 今天+default_days 天。
+
+    兼容 'yyyy-MM-dd HH:mm:ss'（取前10位）、毫秒/秒时间戳。
+    """
+    s = _s(v)
+    if s:
+        if len(s) >= 10 and s[:4].isdigit() and s[4] == "-":
+            return s[:10]
+        if s.isdigit():
+            ts = int(s)
+            ts = ts / 1000 if ts > 1e11 else ts
+            try:
+                return datetime.fromtimestamp(ts).strftime("%Y-%m-%d")
+            except (ValueError, OSError):
+                pass
+    return (datetime.now() + timedelta(days=default_days)).strftime("%Y-%m-%d")
+
+
 # ---------------------------------------------------------------- 确认记录
 
 def _confirm_dict(rec):
@@ -249,7 +268,7 @@ def build_po_body(db, plan_group_no, action="0"):
             # 关联用明细级采购计划号 planNo(PP…)，不是组号 planGroupNo(PPG…)，
             # 否则赛狐无法标记具体哪条计划被采购，purchaseStatus 不更新
             "purchasePlanNo": _s(it.get("planNo")) or plan_group_no,
-            "expectArrivalTime": _s(it.get("expectArrivalTime")),
+            "expectArrivalTime": _arrival_date(it.get("expectArrivalTime")),
         })
 
     body = {
