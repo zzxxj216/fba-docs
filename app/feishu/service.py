@@ -903,6 +903,14 @@ def _act_choose_weekly(db, chat_id, open_id, value):
             "action": "choose_weekly", "forwarder": fname, "live": live}
 
 
+def _placement_summary(opts):
+    """分仓方案 → 工作区存储用摘要 {option_count, options:[{label,fee_usd,fcs:[...]}]}。"""
+    return {"option_count": len(opts), "options": [
+        {"label": o.get("label"), "fee_usd": o.get("fee_usd"),
+         "fcs": [{"fc": s.get("fc"), "boxes": s.get("boxes"), "weight_kg": s.get("weight_kg")}
+                 for s in (o.get("shipments") or [])]} for o in opts]}
+
+
 def _purchase_build_one(db, pgn, opname):
     """单个采购计划：工厂确认 → 生成采购单(赛狐到待到货) → 建仓。返回结果(不发卡片)。
 
@@ -940,7 +948,8 @@ def _purchase_build_one(db, pgn, opname):
         pos.create_purchase_order(db, pgn, action="2", dry_run=False)
         info = pos.get_confirm(db, pgn)
         workspace.record_plan(opname, pgn, stage="采购单已生成",
-                              note=f"采购单 {info.get('purchase_no', '')} · {info.get('status', '')}")
+                              note=f"采购单 {info.get('purchase_no', '')} · {info.get('status', '')}",
+                              purchase_no=info.get("purchase_no"))
         res["steps"].append(f"✅ 采购单已生成 → {info.get('status', '待到货')}（{info.get('purchase_no', '')}）")
     except Exception as e:
         db.rollback()
@@ -958,7 +967,9 @@ def _purchase_build_one(db, pgn, opname):
             opts = json.loads(batch.placement_options or "[]")
         except (ValueError, TypeError):
             opts = []
-        workspace.record_plan(opname, pgn, stage="已建仓", note=f"{len(opts)} 个分仓方案")
+        workspace.record_plan(opname, pgn, stage="已建仓", note=f"{len(opts)} 个分仓方案",
+                              placement=_placement_summary(opts),
+                              inbound_plan_id=getattr(batch, "inbound_plan_id", None))
         res.update(batch_id=batch.id, opts=opts, ok=True)
         res["steps"].append(f"✅ 建仓完成 → {len(opts)} 个分仓方案")
     except Exception as e:
@@ -1041,7 +1052,8 @@ def _act_confirm_purchase(db, chat_id, open_id, value):
         pos.create_purchase_order(db, pgn, action="2", dry_run=False)
         info = pos.get_confirm(db, pgn)
         workspace.record_plan(opname, pgn, stage="采购单已生成",
-                              note=f"采购单 {info.get('purchase_no', '')} · {info.get('status', '')}")
+                              note=f"采购单 {info.get('purchase_no', '')} · {info.get('status', '')}",
+                              purchase_no=info.get("purchase_no"))
         steps.append(f"✅ 采购单已生成 → {info.get('status', '待到货')}（{info.get('purchase_no', '')}）")
     except RuntimeError as e:
         db.rollback()
@@ -1061,7 +1073,9 @@ def _act_confirm_purchase(db, chat_id, open_id, value):
             opts = json.loads(batch.placement_options or "[]")
         except (ValueError, TypeError):
             opts = []
-        workspace.record_plan(opname, pgn, stage="已建仓", note=f"{len(opts)} 个分仓方案")
+        workspace.record_plan(opname, pgn, stage="已建仓", note=f"{len(opts)} 个分仓方案",
+                              placement=_placement_summary(opts),
+                              inbound_plan_id=getattr(batch, "inbound_plan_id", None))
         steps.append(f"✅ 建仓完成 → {len(opts)} 个分仓方案")
         # 采购+建仓进度已记入工作区；给运营直接看分仓方案卡片
         card = cards.placement_card(batch.name or _batch_name(db, batch.id), opts, batch.id)
@@ -1109,7 +1123,9 @@ def _act_build(db, chat_id, open_id, value):
     except (ValueError, TypeError):
         opts = []
     if pgn:
-        workspace.record_plan(opname, pgn, stage="已建仓", note=f"{len(opts)} 个分仓方案")
+        workspace.record_plan(opname, pgn, stage="已建仓", note=f"{len(opts)} 个分仓方案",
+                              placement=_placement_summary(opts),
+                              inbound_plan_id=getattr(batch, "inbound_plan_id", None))
     lines = [f"✅ **{batch.name}** 建仓完成，生成 **{len(opts)}** 个分仓方案："]
     for i, o in enumerate(opts[:4], 1):
         shs = o.get("shipments") or []

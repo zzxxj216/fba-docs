@@ -72,8 +72,12 @@ def _plan_dir(wd, rec):
 
 
 def record_plan(operator, plan_group_no, *, shop="", sku_count=None, qty=None,
-                stage=None, note=""):
-    """登记/更新一个采购计划在本周工作区的进度。返回 {week_dir, plan_dir, rec}。"""
+                stage=None, note="", placement=None, purchase_no=None, inbound_plan_id=None):
+    """登记/更新一个采购计划在本周工作区的进度。返回 {week_dir, plan_dir, rec}。
+
+    placement: 分仓方案 {option_count, options:[{label,fee_usd,fcs:[{fc,boxes,weight_kg}]}]}，
+    建仓后传入，记进 state + 总览/概况，便于回看"本周分了哪些仓"。
+    """
     wd = week_dir(operator)
     state = _load(wd)
     rec = state["plans"].get(plan_group_no) or {
@@ -86,6 +90,12 @@ def record_plan(operator, plan_group_no, *, shop="", sku_count=None, qty=None,
         rec["sku_count"] = sku_count
     if qty is not None:
         rec["qty"] = qty
+    if placement is not None:
+        rec["placement"] = placement
+    if purchase_no:
+        rec["purchase_no"] = purchase_no
+    if inbound_plan_id:
+        rec["inbound_plan_id"] = inbound_plan_id
     if stage and stage != rec.get("stage"):
         rec["stage"] = stage
         rec["history"].append({"ts": _now(), "stage": stage, "note": note})
@@ -159,9 +169,19 @@ def _write_plan_doc(wd, rec):
         f"- SKU 数：{rec.get('sku_count', '')}",
         f"- 总数量：{rec.get('qty', '')}",
         f"- 当前阶段：**{rec.get('stage', '')}**",
+        f"- 采购单号：{rec.get('purchase_no', '') or '—'}",
+        f"- 入库计划：{rec.get('inbound_plan_id', '') or '—'}",
         f"- 创建：{rec.get('created_at', '')}",
-        "", "## 进度时间线", "",
     ]
+    pl = rec.get("placement")
+    if pl and (pl.get("options") or []):
+        lines += ["", "## 分仓方案", "", f"建仓后 {pl.get('option_count', 0)} 个方案："]
+        for i, o in enumerate(pl["options"], 1):
+            fcs = o.get("fcs") or []
+            lines.append(f"- **方案{i}** {o.get('label', '')}　placement费 ${o.get('fee_usd', 0)}")
+            for fc in fcs:
+                lines.append(f"    - {fc.get('fc')}　{fc.get('boxes', 0)}箱 · {fc.get('weight_kg', 0)}kg")
+    lines += ["", "## 进度时间线", ""]
     for h in rec.get("history", []):
         lines.append(f"- {h['ts']}　**{h['stage']}**" + (f"　{h['note']}" if h.get("note") else ""))
     files = rec.get("files", [])
@@ -182,23 +202,36 @@ def _append_log(wd, rec, entry):
         f.write(f"- {entry['ts']} `[{entry['level']}]` {entry['msg']}\n")
 
 
+def _placement_cell(rec):
+    """总览里的"分仓"列：取 FC 最多的方案展示其目的仓（本周分了哪些仓一目了然）。"""
+    pl = rec.get("placement")
+    opts = (pl or {}).get("options") or []
+    if not opts:
+        return ""
+    best = max(opts, key=lambda o: len(o.get("fcs") or []))
+    fcs = [f.get("fc") for f in (best.get("fcs") or [])]
+    shown = "、".join(fcs[:8]) + ("…" if len(fcs) > 8 else "")
+    return f"{len(opts)}方案/{len(fcs)}仓：{shown}"
+
+
 def _write_overview(wd, operator, state):
     plans = sorted(state["plans"].values(),
                    key=lambda x: (x.get("shop", ""), x.get("plan_group_no", "")))
     lines = [
         f"# {operator} 本周工作总览（{os.path.basename(wd)}）", "",
         f"更新：{_now()}　|　共 **{len(plans)}** 个采购计划", "",
-        "| 店铺 | 采购计划 | SKU | 数量 | 当前阶段 | 错误 |",
-        "|---|---|---|---|---|---|",
+        "| 店铺 | 采购计划 | SKU | 数量 | 当前阶段 | 采购单 | 入库计划 | 分仓(目的仓) | 错误 |",
+        "|---|---|---|---|---|---|---|---|---|",
     ]
     for r in plans:
         err = len(r.get("errors", []))
-        errcell = f"⚠️ {err}" if err else ""
-        lines.append("| {shop} | {pgn} | {sku} | {qty} | {stage} | {err} |".format(
+        lines.append("| {shop} | {pgn} | {sku} | {qty} | {stage} | {po} | {ipid} | {fenc} | {err} |".format(
             shop=r.get("shop", ""), pgn=r.get("plan_group_no", ""),
             sku=r.get("sku_count", "") if r.get("sku_count") is not None else "",
             qty=r.get("qty", "") if r.get("qty") is not None else "",
-            stage=r.get("stage", ""), err=errcell))
-    lines += ["", "> 明细见各 `店铺/计划号/概况.md`；错误见同目录 `日志.md`。"]
+            stage=r.get("stage", ""), po=r.get("purchase_no", "") or "",
+            ipid=(r.get("inbound_plan_id", "") or "")[:14],
+            fenc=_placement_cell(r), err=(f"⚠️ {err}" if err else "")))
+    lines += ["", "> 明细见各 `店铺/计划号/概况.md`（含完整分仓方案）；错误见同目录 `日志.md`。"]
     with open(os.path.join(wd, "总览.md"), "w", encoding="utf-8") as f:
         f.write("\n".join(lines))
