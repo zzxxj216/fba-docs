@@ -732,19 +732,20 @@ def _config_self_delivery(pid, placement_option_id, shipment_ids, store):
             raise
 
 
-def _pick_self_delivery(all_opts, shipment_id):
-    """从运输方案里挑该货件的自送选项(USE_YOUR_OWN_CARRIER/非亚马逊合作承运)。"""
-    for o in all_opts:
-        if o.get("shipmentId") != shipment_id:
-            continue
-        sol = (o.get("shippingSolution") or o.get("shippingMode") or "").upper()
-        if "OWN" in sol or "NON_PARTNER" in sol or "SELF" in sol:
-            return o.get("transportationOptionId")
-    # 兜底：没有明显标志时，取该货件没有亚马逊报价(quote)的那个（自送通常无报价）
-    for o in all_opts:
-        if o.get("shipmentId") == shipment_id and not o.get("quote"):
-            return o.get("transportationOptionId")
-    return None
+SELF_DELIVERY_MODE = "FREIGHT_LTL"   # 自送默认优先整车/托盘(LTL)，而非小包(SPD)
+
+
+def _pick_self_delivery(all_opts, shipment_id, prefer_mode=SELF_DELIVERY_MODE):
+    """挑该货件的自送选项(USE_YOUR_OWN_CARRIER)。**优先 FREIGHT_LTL(整托/卡车)**，
+    其次其它(如 GROUND_SMALL_PARCEL 小包)；自送是货代卡车送整批，LTL 才对。"""
+    own = [o for o in all_opts if o.get("shipmentId") == shipment_id
+           and "OWN" in (o.get("shippingSolution") or "").upper()]
+    if not own:    # 兜底：无明显标志时取该货件没有亚马逊报价(quote)的(自送通常无报价)
+        own = [o for o in all_opts if o.get("shipmentId") == shipment_id and not o.get("quote")]
+    if not own:
+        return None
+    own.sort(key=lambda o: 0 if o.get("shippingMode") == prefer_mode else 1)  # LTL 优先
+    return own[0].get("transportationOptionId")
 
 
 def fetch_labels(db, batch, kind="box", page_type=None, live=False):
