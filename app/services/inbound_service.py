@@ -678,6 +678,23 @@ def _config_self_delivery(pid, placement_option_id, shipment_ids, store):
         if not chosen:
             raise RuntimeError(f"货件 {sid} 没有自送(USE_YOUR_OWN_CARRIER)运输选项")
         selections.append({"shipmentId": sid, "transportationOptionId": chosen})
+    # 自送(非合作承运)货件：确认运输前必须先确认每个货件的"送仓时间窗"
+    for sid in shipment_ids:
+        g2 = fba.call("POST", f"/inbound-plans/{pid}/shipments/{sid}/delivery-window-options/generate",
+                      store=store)
+        if g2.get("operationId"):
+            fba.wait_operation(g2["operationId"], store=store, timeout=300)
+        dwo = fba.call("GET", f"/inbound-plans/{pid}/shipments/{sid}/delivery-window-options",
+                       store=store) or {}
+        windows = dwo.get("deliveryWindowOptions") or dwo.get("deliveryWindowOptionsList") or []
+        if not windows:
+            raise RuntimeError(f"货件 {sid} 无可选送仓时间窗(delivery window)")
+        wid = windows[0].get("deliveryWindowOptionId") or windows[0].get("id")
+        cf2 = fba.call("POST",
+                       f"/inbound-plans/{pid}/shipments/{sid}/delivery-window-options/{wid}/confirm",
+                       store=store)
+        if cf2.get("operationId"):
+            fba.wait_operation(cf2["operationId"], store=store, timeout=300)
     cf = fba.call("POST", f"/inbound-plans/{pid}/transportation-options/confirm", store=store,
                   json={"selections": selections})
     fba.wait_operation(cf["operationId"], store=store, timeout=300)
