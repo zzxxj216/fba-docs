@@ -511,6 +511,8 @@ def handle_action(db, *, chat_id, open_id, action, value):
         return _act_progress(db, chat_id, open_id)
     if action == "view_placement":
         return _act_view_placement(db, chat_id, batch_id)
+    if action == "weekly_summary":
+        return _act_weekly_summary(db, chat_id, open_id)
     if action == "weekly_inquiry":
         return _act_weekly_inquiry(db, chat_id, open_id)
     if action == "weekly_inquiry_send":
@@ -613,6 +615,19 @@ def _weekly_draft_text(summary):
     lines.append("麻烦按每个目的仓分别报：运费单价(币种/单位)、渠道、时效、截关、起送费；"
                  "另外贵司月度报关费怎么收?多谢～")
     return "\n".join(lines)
+
+
+def _act_weekly_summary(db, chat_id, open_id):
+    """分仓方案卡【去整包询价】→ 展示本周整包询价汇总（等同发「汇总」）。"""
+    op = intake.identify_operator(db, open_id=open_id)
+    summary = build_weekly_summary(db, op)
+    try:
+        workspace.write_weekly_summary(op.name or "运营", summary)
+    except Exception:
+        pass
+    card = cards.summary_card(op.name or "运营", summary)
+    return {"card": card, "sent": _safe_send_card(chat_id, card),
+            "action": "weekly_summary", "batch_count": summary.get("batch_count")}
 
 
 def _act_weekly_inquiry(db, chat_id, open_id):

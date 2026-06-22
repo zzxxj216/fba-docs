@@ -219,13 +219,13 @@ def progress_card(operator_name, items):
 def placement_card(batch_name, options, batch_id=None):
     """分仓方案卡片：建仓后亚马逊给的各分仓/合仓方案（FC/箱数/重量/placement费）。
 
-    options: list[dict] {placement_option_id, label, fee_usd, shipments:[{fc,city,state,boxes,weight_kg}]}
-    给定 batch_id 时，每个方案带【提交此方案+配自送】按钮（默认演练，不碰亚马逊）。
+    只展示方案、**不让此时选仓**——选仓放到询价比价后（选货代时一起定）。
+    给定 batch_id 时带【整包询价汇总】按钮引导下一步。
     """
     n = len(options)
     head = {"tag": "div", "text": {"tag": "lark_md",
-            "content": f"**{batch_name}** 建仓后有 **{n}** 个分仓方案"
-                       "（留着和货代头程成本一起比，再选方案 + 货代）："}}
+            "content": f"**{batch_name}** 建仓后有 **{n}** 个分仓方案。"
+                       "**先别选仓** —— 下一步去询价，货代回价后按「placement费 + 头程」总成本再选 仓+货代："}}
     if not options:
         return {"config": {"wide_screen_mode": True},
                 "header": _header("🏗️ 分仓方案", "purple"),
@@ -242,14 +242,12 @@ def placement_card(batch_name, options, batch_id=None):
             lines.append(f"　🏬 {s.get('fc')}{loc}　{s.get('boxes', 0)}箱 · {s.get('weight_kg', 0)}kg")
         elements.append({"tag": "hr"})
         elements.append({"tag": "div", "text": {"tag": "lark_md", "content": "\n".join(lines)}})
-        if batch_id and o.get("placement_option_id"):
-            elements.append({"tag": "action", "actions": [
-                _btn(f"📤 提交方案{i}+配自送", "commit_placement",
-                     {"batch_id": batch_id, "placement_option_id": o.get("placement_option_id")}),
-            ]})
     elements.append({"tag": "hr"})
+    elements.append({"tag": "action", "actions": [
+        _btn("🚢 去整包询价", "weekly_summary", {}, btn_type="primary"),
+    ]})
     elements.append({"tag": "note", "elements": [{"tag": "plain_text",
-                    "content": "询价后按「placement费 + 头程」总成本比，再选方案 + 货代；提交默认演练不碰亚马逊"}]})
+                    "content": "下一步：整包询价 → 货代回价 → 比价 →（那时）选仓+货代"}]})
     return {"config": {"wide_screen_mode": True},
             "header": _header("🏗️ 分仓方案", "purple"),
             "elements": elements}
