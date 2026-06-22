@@ -455,15 +455,58 @@ def _notify_operator_quote(db, inq, fwd, total, currency, covered, want_n, missi
         fc.send_text(target.feishu_open_id, msg, receive_id_type="open_id")
     except Exception:
         pass
-    if not missing:                 # 该货代报全 → 自动把"按批次比价卡"推给运营选（不用手动发「比价」）
+    # 仅当"本周所有整包询价都报全"时，才主动把按批次比价卡推给运营（不用手动发「比价」）
+    if not missing and _weekly_all_complete(db, target):
         try:
             from ..feishu import service as fsvc, cards as fcards
             comp = (fsvc.weekly_comparison_from_db(db, target) or {}).get("comparison") or []
             if comp:
+                fc.send_text(target.feishu_open_id, "✅ 本周所有询价都报全了，这是按批次比价，请逐批选货代：",
+                             receive_id_type="open_id")
                 fc.send_card(target.feishu_open_id, fcards.weekly_comparison_card(comp),
                              receive_id_type="open_id")
         except Exception:
             pass
+
+
+def _weekly_all_complete(db, target_op):
+    """该运营本周所有整包询价是否都已报全（每条询价至少有一家货代覆盖其全部仓）。"""
+    import json as _json
+    from datetime import datetime, timedelta
+    now = datetime.now()
+    ws = (now - timedelta(days=now.weekday())).replace(hour=0, minute=0, second=0, microsecond=0)
+    try:
+        sids = _json.loads(target_op.scope_brand_ids or "[]")
+    except (ValueError, TypeError):
+        sids = []
+    inqs = []
+    for cand in db.query(Inquiry).filter(Inquiry.created_at >= ws).all():
+        try:
+            st = _json.loads(cand.structured or "{}")
+        except (ValueError, TypeError):
+            st = {}
+        if not st.get("weekly"):
+            continue
+        if not target_op.is_admin:
+            b = db.get(Batch, cand.batch_id)
+            if not sids or (b and b.brand_id not in sids):
+                continue
+        inqs.append(cand)
+    if not inqs:
+        return False
+    for inq in inqs:
+        lanes = _jload(inq.lanes_snapshot, [])
+        want = {(l.get("fc") or "").upper() for l in lanes if l.get("fc")}
+        done = False
+        for q in db.query(InquiryQuote).filter(InquiryQuote.inquiry_id == inq.id).all():
+            got = {(ln.fc or "").upper() for ln in q.lines if (ln.fc or "") and ln.price is not None}
+            flat = any((ln.fc or "").upper() in ("", "ALL") and ln.price is not None for ln in q.lines)
+            if flat or want <= got:
+                done = True
+                break
+        if not done:
+            return False
+    return True
 
 
 # ---------------------------------------------------------------- 提取 → QuoteLine
