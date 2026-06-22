@@ -645,13 +645,13 @@ def confirm_placement_for_batch(db, batch, placement_option_id, *, live=False):
     if not live:
         plan["dry_run"] = True
         return plan                       # 🛑 演练：到此为止，不碰亚马逊
-    # 防重复提交：以**亚马逊真实状态**为准——该计划已有"确认号货件"才算已提交(不靠本地状态标记)
-    confirmed = [s for s in ((fba.call("GET", f"/inbound-plans/{pid}", store=store) or {}).get("shipments") or [])
-                 if s.get("shipmentConfirmationId")]
-    if confirmed:
+    # 防重复提交：以**亚马逊真实状态**为准——确认分仓会生成货件，故 plan 已有货件即视为已提交
+    # （确认号在货件详情里，plan 列表层只有 shipmentId+status，所以用"有无货件"判断）
+    existing_shs = (fba.call("GET", f"/inbound-plans/{pid}", store=store) or {}).get("shipments") or []
+    if existing_shs:
         plan.update({"dry_run": False, "already_submitted": True,
                      "shipments": _backfill_shipments(batch, pid,
-                                  [s.get("shipmentId") for s in confirmed], store)})
+                                  [s.get("shipmentId") for s in existing_shs], store)})
         return plan
     # ===== 以下真实写亚马逊，仅 live=True =====
     c = fba.call("POST", f"/inbound-plans/{pid}/placement-options/{placement_option_id}/confirm", store=store)
