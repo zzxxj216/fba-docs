@@ -136,6 +136,16 @@ def restock_card(operator_name, plans):
     status_tag = {"待采购": "<font color='orange'>● 待采购</font>",
                   "待审核": "<font color='grey'>● 待审核</font>"}
     elements = [head]
+    pending_review = [p for p in plans if p.get("status_label") == "待审核"]
+    to_purchase = [p for p in plans if p.get("status_label") == "待采购"]
+    if pending_review:
+        elements.append({"tag": "div", "text": {"tag": "lark_md",
+                        "content": f"⚠️ 有 **{len(pending_review)}** 个**待审核**，"
+                                   "请先去赛狐审核通过后再采购（待审核的暂不能采购）。"}})
+    if to_purchase:
+        elements.append({"tag": "action", "actions": [
+            _btn(f"⚡ 一键采购（{len(to_purchase)} 个待采购）", "bulk_confirm_purchase",
+                 {}, btn_type="primary")]})
     for shop, splans in by_shop.items():
         elements.append({"tag": "hr"})
         elements.append({"tag": "div", "text": {"tag": "lark_md",
@@ -159,6 +169,9 @@ def restock_card(operator_name, plans):
                     _btn("✅ 确认采购", "confirm_purchase",
                          {"plan_group_no": p.get("plan_group_no")}, btn_type="primary"),
                 ]})
+            elif label == "待审核":
+                elements.append({"tag": "note", "elements": [{"tag": "plain_text",
+                                "content": "⚠️ 待审核 → 先去赛狐审核通过，才能采购"}]})
     elements.append({"tag": "hr"})
     elements.append({"tag": "note", "elements": [{"tag": "plain_text",
                     "content": "待采购可点【确认采购】；到货后发「建仓」进入下一步"}]})

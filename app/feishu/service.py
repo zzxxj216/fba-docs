@@ -441,6 +441,9 @@ def handle_message(db, *, chat_id, open_id=None, user_id=None, text=""):
     db.commit()
 
     # 看本周补货 / 待采购 → 从赛狐拉补货计划（按管辖店铺过滤）→ 补货卡片
+    if text and "一键采购" in text:        # 文字命令「一键采购」直接走批量
+        return _act_bulk_confirm_purchase(db, chat_id, open_id)
+
     if intent["intent"] == "restock":
         plans = build_restock(db, op)
         card = cards.restock_card(op.name or "运营", plans)
@@ -526,6 +529,8 @@ def handle_action(db, *, chat_id, open_id, action, value):
         return _act_gen_docs_all(db, chat_id, batch_id)
     if action == "confirm_purchase":
         return _act_confirm_purchase(db, chat_id, open_id, value)
+    if action == "bulk_confirm_purchase":
+        return _act_bulk_confirm_purchase(db, chat_id, open_id)
     if action == "build":
         return _act_build(db, chat_id, open_id, value)
     if action == "fill_data":
@@ -881,6 +886,100 @@ def _act_choose_weekly(db, chat_id, open_id, value):
     card = cards.text_card("选定货代 + 逐批提交分仓", "\n".join(lines), template="green")
     return {"card": card, "sent": _safe_send_card(chat_id, card),
             "action": "choose_weekly", "forwarder": fname, "live": live}
+
+
+def _purchase_build_one(db, pgn, opname):
+    """单个采购计划：工厂确认 → 生成采购单(赛狐到待到货) → 建仓。返回结果(不发卡片)。
+
+    {pgn, shop, steps[], batch_id, opts, ok(到建仓成功), stopped(停在哪步/None)}。
+    供【确认采购】单个与【一键采购】批量复用。
+    """
+    from ..services import purchase_order_service as pos
+    from ..services import purchase_plan_service as pps
+    from ..services import inbound_service
+    res = {"pgn": pgn, "shop": "", "steps": [], "batch_id": None, "opts": [],
+           "ok": False, "stopped": None}
+    grp = pps._find_group(db, pgn)
+    if grp is None:
+        res["stopped"] = "未找到计划"
+        res["steps"].append(f"❌ 赛狐未找到采购计划 {pgn}")
+        return res
+    pitems = grp.get("purchasePlanItemVoList") or []
+    shop = next((p.get("shopName") for p in pitems if p.get("shopName")), "") or ""
+    res["shop"] = shop
+    workspace.record_plan(opname, pgn, shop=shop, sku_count=len(pitems),
+                          qty=sum((p.get("planNum") or 0) for p in pitems), stage="待采购")
+    try:
+        items = [{"sku": p.get("sku"), "commodity_name": p.get("commodityName"),
+                  "num": p.get("planNum"), "box_count": p.get("cartonNum")} for p in pitems]
+        pos.confirm_plan(db, pgn, items, confirmed_by=opname)
+        workspace.record_plan(opname, pgn, stage="已确认采购")
+        res["steps"].append("✅ 工厂确认")
+    except Exception as e:
+        db.rollback()
+        workspace.log(opname, pgn, f"工厂确认失败：{e}", level="error", shop=shop)
+        res["stopped"] = "工厂确认"
+        res["steps"].append(f"❌ 工厂确认失败：{str(e)[:120]}")
+        return res
+    try:
+        pos.create_purchase_order(db, pgn, action="2", dry_run=False)
+        info = pos.get_confirm(db, pgn)
+        workspace.record_plan(opname, pgn, stage="采购单已生成",
+                              note=f"采购单 {info.get('purchase_no', '')} · {info.get('status', '')}")
+        res["steps"].append(f"✅ 采购单已生成 → {info.get('status', '待到货')}（{info.get('purchase_no', '')}）")
+    except Exception as e:
+        db.rollback()
+        workspace.log(opname, pgn, f"生成采购单失败：{e}", level="error", shop=shop)
+        res["stopped"] = "生成采购单"
+        res["steps"].append(f"❌ 生成采购单失败：{str(e)[:120]}")
+        return res
+    try:
+        r = pps.import_plan_only(db, pgn)
+        batch = db.get(Batch, r["batch_id"]) if r else None
+        if batch is None:
+            raise RuntimeError("采购计划落批次失败")
+        inbound_service.build_for_batch(db, batch)
+        try:
+            opts = json.loads(batch.placement_options or "[]")
+        except (ValueError, TypeError):
+            opts = []
+        workspace.record_plan(opname, pgn, stage="已建仓", note=f"{len(opts)} 个分仓方案")
+        res.update(batch_id=batch.id, opts=opts, ok=True)
+        res["steps"].append(f"✅ 建仓完成 → {len(opts)} 个分仓方案")
+    except Exception as e:
+        db.rollback()
+        workspace.log(opname, pgn, f"建仓失败：{e}", level="error", shop=shop)
+        res["stopped"] = "建仓"
+        res["steps"].append(f"⚠️ 采购已到待到货；**建仓失败**：{str(e)[:140]}")
+    return res
+
+
+def _act_bulk_confirm_purchase(db, chat_id, open_id):
+    """补货卡【一键采购】/「一键采购」→ 所有待采购计划逐个 确认采购+建仓，汇总；待审核不动并提醒。"""
+    op = intake.identify_operator(db, open_id=open_id)
+    opname = (op.name if op else None) or "运营"
+    plans = build_restock(db, op)
+    to_purchase = [p for p in plans if p.get("status_label") == "待采购"]
+    review = [p for p in plans if p.get("status_label") == "待审核"]
+    if not to_purchase:
+        msg = "没有待采购计划。" + (f"（有 {len(review)} 个待审核，请先去赛狐审核）" if review else "")
+        card = cards.text_card("一键采购", msg, template="orange")
+        return {"card": card, "sent": _safe_send_card(chat_id, card), "action": "bulk_confirm_purchase"}
+    lines = [f"对 **{len(to_purchase)}** 个待采购计划逐个 确认采购 + 建仓："]
+    ok = 0
+    for p in to_purchase:
+        r = _purchase_build_one(db, p.get("plan_group_no"), opname)
+        if r["ok"]:
+            ok += 1
+            lines.append(f"✅ {r['pgn']}（{r['shop']}）→ 建仓完成 {len(r['opts'])} 方案")
+        else:
+            lines.append(f"⚠️ {r['pgn']}（{r['shop']}）→ 停在「{r['stopped']}」：{r['steps'][-1][:60]}")
+    if review:
+        lines.append(f"\nℹ️ 另有 **{len(review)}** 个待审核未处理，请先去赛狐审核后再采购。")
+    card = cards.text_card(f"一键采购 {ok}/{len(to_purchase)} 完成", "\n".join(lines),
+                           template="green" if ok else "orange")
+    return {"card": card, "sent": _safe_send_card(chat_id, card),
+            "action": "bulk_confirm_purchase", "ok": ok, "total": len(to_purchase)}
 
 
 def _act_confirm_purchase(db, chat_id, open_id, value):
