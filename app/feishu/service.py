@@ -324,8 +324,11 @@ def weekly_comparison(db, op, quotes):
     result = []
     for b, opts in batches:
         brand = db.get(Brand, b.brand_id) if b.brand_id else None
+        bound = {f.name for f in _brand_forwarders(db, b.brand_id)}   # 只比该批次绑定的货代
         cands = []
         for fname, frates in (quotes or {}).items():
+            if bound and fname not in bound:    # 别的店铺的货代不参与本批比价(防 FC 串台)
+                continue
             cur = next((v.get("currency", "USD") for v in frates.values()), "USD")
             best = None
             for o in opts:
