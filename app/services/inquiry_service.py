@@ -506,18 +506,19 @@ def _persist_quote(db, inquiry_id, forwarder_id, extracted, raw_message="",
 
 
 def extract_quote_from_text(db, inquiry_id, forwarder_id, text, use_llm_fallback=True):
-    """文本报价提取：先正则，置信度低且允许时走 LLM 兜底，落 InquiryQuote+QuoteLine。"""
+    """文本报价提取：**优先大模型**(多仓不同价更准)，LLM 不可用/失败再退正则。落 QuoteLine。"""
     inq = db.get(Inquiry, inquiry_id)
     lanes = _jload(inq.lanes_snapshot, []) if inq else []
-    extracted = quote_extractor.extract(text, lanes=lanes)
-    if (extracted.get("confidence", 0) < REGEX_CONFIDENCE_FLOOR and use_llm_fallback
-            and llm_client.available()):
+    extracted = None
+    if use_llm_fallback and llm_client.available():
         try:
             llm_res = quote_extractor_llm.extract_text(text, lanes=lanes)
             if llm_res.get("lines"):
                 extracted = llm_res
         except llm_client.LLMUnavailable:
             pass
+    if extracted is None:                 # 退正则兜底
+        extracted = quote_extractor.extract(text, lanes=lanes)
     return _persist_quote(db, inquiry_id, forwarder_id, extracted, raw_message=text)
 
 
