@@ -606,23 +606,26 @@ def _act_view_placement(db, chat_id, batch_id):
             "action": "view_placement", "options": len(opts)}
 
 
-def _simple_inquiry_text(lanes, ref):
-    """简洁询价正文：开头直接、**只列仓号(箱/kg)、不带店铺名**。"""
+def _simple_inquiry_text(lanes):
+    """简洁询价正文：开头"你好"、**只列仓号(箱/kg)、不带店铺名、不带暗号**。"""
     fcs = "、".join(f"{l['fc']}({l.get('boxes', 0)}箱/{l.get('weight_kg', 0)}kg)" for l in lanes)
-    return (f"老师好，麻烦这几个仓报下头程价格：\n{fcs}\n"
-            f"（每个仓 单价/单位、时效、截关、月度报关费；暗号 {ref}）")
+    return (f"你好，麻烦这几个仓报下头程价格：\n{fcs}\n"
+            f"（每个仓 单价/单位、时效、截关、月度报关费）")
 
 
-def _inquiry_groups(db, summary):
+def _inquiry_groups(db, summary, only_new=True):
     """按货代分组本周批次的目的仓：{fid: {fwd, lanes:{fc:{fc,boxes,weight_kg}}, batches:[Batch]}}。
 
-    每家货代只收它**绑定店铺**的仓；多个店铺绑同一货代→合并到一组；
-    一个店铺绑多货代→每家都收到该店铺的仓（多家比价）。
+    每家货代只收它**绑定店铺**的仓；多店铺绑同一货代→合并；一店铺绑多货代→每家都收。
+    only_new=True：只含"已建仓但还没询价"的批次（状态=已建仓），避免重复发已询过的
+    （如周一发过、周三新建的只发周三）。
     """
     groups = {}
     for b in summary.get("batches") or []:
         bt = db.get(Batch, b["batch_id"])
         if bt is None:
+            continue
+        if only_new and bt.status != "已建仓":   # 询价中/已选货代 等已询过的跳过
             continue
         for f in _brand_forwarders(db, bt.brand_id):
             g = groups.setdefault(f.id, {"fwd": f, "lanes": {}, "batches": []})
@@ -661,8 +664,7 @@ def _act_weekly_inquiry(db, chat_id, open_id):
     parts = ["**整包询价草稿**（按货代分组，每家只发它绑定店铺的仓）："]
     for fid, g in groups.items():
         lanes = list(g["lanes"].values())
-        ref = f"INQ-周{date.today().strftime('%m%d')}-{fid}"
-        parts.append(f"\n──「{g['fwd'].name}」（{len(lanes)} 个仓）──\n" + _simple_inquiry_text(lanes, ref))
+        parts.append(f"\n──「{g['fwd'].name}」（{len(lanes)} 个仓）──\n" + _simple_inquiry_text(lanes))
     card = cards.text_card("整包询价 · 待确认", "\n".join(parts), template="orange")
     card["elements"].append({"tag": "action", "actions": [
         _btn_dict("✅ 确认群发货代", "weekly_inquiry_send", {}, "primary"),
@@ -683,8 +685,8 @@ def _act_weekly_inquiry_send(db, chat_id, open_id):
     lines, total_ok = [], 0
     for fid, g in groups.items():
         lanes = list(g["lanes"].values())
-        ref = f"INQ-周{date.today().strftime('%m%d')}-{fid}"
-        draft = _simple_inquiry_text(lanes, ref)
+        ref = f"INQ-周{date.today().strftime('%m%d')}-{fid}"   # 仅作 Inquiry 内部编号，不进正文
+        draft = _simple_inquiry_text(lanes)
         try:
             inq = inq_svc.start_weekly_inquiry(db, g["batches"], lanes, [fid], draft, ref)
             res = inq_svc.send_inquiry(db, inq.id)
@@ -694,6 +696,10 @@ def _act_weekly_inquiry_send(db, chat_id, open_id):
             res = {"results": [{"error": str(e)[:40]}]}
         total_ok += 1 if ok else 0
         if ok:
+            for bt in g["batches"]:           # 标记已询价，避免下次整包重复发
+                if bt.status == "已建仓":
+                    bt.status = "询价中"
+            db.commit()
             lines.append(f"✅ {g['fwd'].name}：{len(lanes)} 个仓")
         else:
             errs = "；".join(str(r.get("error", ""))[:30] for r in res["results"] if not r.get("sent"))
