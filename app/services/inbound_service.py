@@ -645,21 +645,24 @@ def confirm_placement_for_batch(db, batch, placement_option_id, *, live=False):
     if not live:
         plan["dry_run"] = True
         return plan                       # 🛑 演练：到此为止，不碰亚马逊
-    # 防重复提交：以**亚马逊真实状态**为准——确认分仓会生成货件，故 plan 已有货件即视为已提交
-    # （确认号在货件详情里，plan 列表层只有 shipmentId+status，所以用"有无货件"判断）
-    existing_shs = (fba.call("GET", f"/inbound-plans/{pid}", store=store) or {}).get("shipments") or []
-    if existing_shs:
-        plan.update({"dry_run": False, "already_submitted": True,
-                     "shipments": _backfill_shipments(batch, pid,
-                                  [s.get("shipmentId") for s in existing_shs], store)})
-        return plan
-    # ===== 以下真实写亚马逊，仅 live=True =====
-    c = fba.call("POST", f"/inbound-plans/{pid}/placement-options/{placement_option_id}/confirm", store=store)
-    fba.wait_operation(c["operationId"], store=store, timeout=300)
+    # ===== 真实写亚马逊：每步幂等（已做过则忽略"already/cannot be processed"继续）=====
+    # 1) 确认分仓方案（已确认则跳过）
+    try:
+        c = fba.call("POST", f"/inbound-plans/{pid}/placement-options/{placement_option_id}/confirm",
+                     store=store)
+        if c.get("operationId"):
+            fba.wait_operation(c["operationId"], store=store, timeout=300)
+    except RuntimeError as e:
+        if not _already_done(e):
+            raise
+    # 2) 取该方案的货件
     pl = fba.call("GET", f"/inbound-plans/{pid}/placement-options", store=store) or {}
     o = next((x for x in pl.get("placementOptions") or []
               if x.get("placementOptionId") == placement_option_id), None)
     shipment_ids = (o.get("shipmentIds") if o else []) or []
+    if not shipment_ids:
+        raise RuntimeError("确认分仓后未取到货件(检查方案/计划状态)")
+    # 3) 自送运输（幂等）+ 回填
     _config_self_delivery(pid, placement_option_id, shipment_ids, store)
     ships = _backfill_shipments(batch, pid, shipment_ids, store)
     batch.status = "运输已配置"
@@ -668,8 +671,16 @@ def confirm_placement_for_batch(db, batch, placement_option_id, *, live=False):
     return plan
 
 
+def _already_done(e):
+    """判断亚马逊报错是不是"该步已做过/状态已变"——幂等流程里这种忽略继续。"""
+    s = str(e).lower()
+    return any(k in s for k in ("already", "has already been confirmed",
+                                "cannot be processed", "already confirmed"))
+
+
 def _config_self_delivery(pid, placement_option_id, shipment_ids, store):
     """给各货件配自送(非合作承运)运输：generate → 选 USE_YOUR_OWN_CARRIER → confirm。"""
+    import time
     from datetime import date, timedelta
     rtw = {"start": (date.today() + timedelta(days=3)).strftime("%Y-%m-%dT00:00:00Z")}
     cfgs = [{"shipmentId": sid, "readyToShipWindow": rtw} for sid in shipment_ids]
@@ -677,35 +688,48 @@ def _config_self_delivery(pid, placement_option_id, shipment_ids, store):
                  json={"placement_option_id": placement_option_id,
                        "shipment_transportation_configurations": cfgs})
     fba.wait_operation(g["operationId"], store=store, timeout=300)
-    opts = fba.call("GET", f"/inbound-plans/{pid}/transportation-options",
-                    params={"placement_option_id": placement_option_id}, store=store) or {}
-    all_opts = opts.get("transportationOptions") or []
+    all_opts = []                          # 生成后选项可能最终一致延迟，空则重试几次再列
+    for _ in range(6):
+        opts = fba.call("GET", f"/inbound-plans/{pid}/transportation-options",
+                        params={"placement_option_id": placement_option_id}, store=store) or {}
+        all_opts = opts.get("transportationOptions") or []
+        if all_opts:
+            break
+        time.sleep(5)
     selections = []
     for sid in shipment_ids:
         chosen = _pick_self_delivery(all_opts, sid)
         if not chosen:
             raise RuntimeError(f"货件 {sid} 没有自送(USE_YOUR_OWN_CARRIER)运输选项")
         selections.append({"shipmentId": sid, "transportationOptionId": chosen})
-    # 自送(非合作承运)货件：确认运输前必须先确认每个货件的"送仓时间窗"
+    # 自送(非合作承运)货件：确认运输前必须先确认每个货件的"送仓时间窗"（幂等）
     for sid in shipment_ids:
-        g2 = fba.call("POST", f"/inbound-plans/{pid}/shipments/{sid}/delivery-window-options/generate",
-                      store=store)
-        if g2.get("operationId"):
-            fba.wait_operation(g2["operationId"], store=store, timeout=300)
-        dwo = fba.call("GET", f"/inbound-plans/{pid}/shipments/{sid}/delivery-window-options",
-                       store=store) or {}
-        windows = dwo.get("deliveryWindowOptions") or dwo.get("deliveryWindowOptionsList") or []
-        if not windows:
-            raise RuntimeError(f"货件 {sid} 无可选送仓时间窗(delivery window)")
-        wid = windows[0].get("deliveryWindowOptionId") or windows[0].get("id")
-        cf2 = fba.call("POST",
-                       f"/inbound-plans/{pid}/shipments/{sid}/delivery-window-options/{wid}/confirm",
-                       store=store)
-        if cf2.get("operationId"):
-            fba.wait_operation(cf2["operationId"], store=store, timeout=300)
-    cf = fba.call("POST", f"/inbound-plans/{pid}/transportation-options/confirm", store=store,
-                  json={"selections": selections})
-    fba.wait_operation(cf["operationId"], store=store, timeout=300)
+        try:
+            g2 = fba.call("POST", f"/inbound-plans/{pid}/shipments/{sid}/delivery-window-options/generate",
+                          store=store)
+            if g2.get("operationId"):
+                fba.wait_operation(g2["operationId"], store=store, timeout=300)
+            dwo = fba.call("GET", f"/inbound-plans/{pid}/shipments/{sid}/delivery-window-options",
+                           store=store) or {}
+            windows = dwo.get("deliveryWindowOptions") or dwo.get("deliveryWindowOptionsList") or []
+            if not windows:
+                raise RuntimeError(f"货件 {sid} 无可选送仓时间窗(delivery window)")
+            wid = windows[0].get("deliveryWindowOptionId") or windows[0].get("id")
+            cf2 = fba.call("POST",
+                           f"/inbound-plans/{pid}/shipments/{sid}/delivery-window-options/{wid}/confirm",
+                           store=store)
+            if cf2.get("operationId"):
+                fba.wait_operation(cf2["operationId"], store=store, timeout=300)
+        except RuntimeError as e:
+            if not _already_done(e):
+                raise
+    try:
+        cf = fba.call("POST", f"/inbound-plans/{pid}/transportation-options/confirm", store=store,
+                      json={"selections": selections})
+        fba.wait_operation(cf["operationId"], store=store, timeout=300)
+    except RuntimeError as e:
+        if not _already_done(e):
+            raise
 
 
 def _pick_self_delivery(all_opts, shipment_id):
