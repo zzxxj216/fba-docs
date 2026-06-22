@@ -368,17 +368,93 @@ def record_incoming(db, payload):
     return res
 
 
+def _conversation_text(db, inquiry_id, forwarder_id, limit=15):
+    """该货代针对此询价的近期来信拼成一段，供 LLM 整体提取（货代常分多条发/改价）。"""
+    rows = (db.query(ForwarderMessage)
+            .filter(ForwarderMessage.forwarder_id == forwarder_id,
+                    ForwarderMessage.inquiry_id == inquiry_id,
+                    ForwarderMessage.direction == "in")
+            .order_by(ForwarderMessage.id.asc()).all())
+    parts = [(m.content or "").strip() for m in rows[-limit:] if (m.content or "").strip()]
+    return "\n".join(parts)
+
+
 def _auto_extract(db, msg):
-    """归属成功的来信 → 自动提取报价。文字走文本提取；图片有本地路径才走视觉提取。"""
+    """归属成功的来信 → 自动提取报价（整段对话喂 LLM）→ 算缺仓/总价 + 提醒补报 + 通知运营。"""
+    quote = None
     if msg.msg_type == "image":
         media = _jload(msg.media, {}) or {}
         path = media.get("path") or media.get("local_path") or ""
         if path and os.path.exists(path):
-            return extract_quote_from_image(db, msg.inquiry_id, msg.forwarder_id, path)
-        return None
-    if (msg.content or "").strip():
-        return extract_quote_from_text(db, msg.inquiry_id, msg.forwarder_id, msg.content)
-    return None
+            quote = extract_quote_from_image(db, msg.inquiry_id, msg.forwarder_id, path)
+    elif (msg.content or "").strip():
+        convo = _conversation_text(db, msg.inquiry_id, msg.forwarder_id) or msg.content
+        quote = extract_quote_from_text(db, msg.inquiry_id, msg.forwarder_id, convo)
+    if quote is not None:
+        try:
+            _post_extract(db, msg.inquiry_id, msg.forwarder_id, quote)
+        except Exception:
+            pass
+    return quote
+
+
+def _post_extract(db, inquiry_id, forwarder_id, quote):
+    """提取后：算缺仓 + 整包总价；缺仓则群里提醒货代补报；通知管该店铺的运营。"""
+    inq = db.get(Inquiry, inquiry_id)
+    lanes = _jload(inq.lanes_snapshot, []) if inq else []
+    want = {(l.get("fc") or "").upper() for l in lanes if l.get("fc")}
+    got = {(ln.fc or "").upper() for ln in quote.lines if (ln.fc or "") and ln.price is not None}
+    flat = any((ln.fc or "").upper() in ("", "ALL") and ln.price is not None for ln in quote.lines)
+    missing = [] if flat else sorted(want - got)
+    total = currency = None
+    try:
+        pt = _package_total(quote, lanes)
+        total, currency = pt.get("total"), pt.get("currency")
+    except Exception:
+        pass
+    fwd = db.get(Forwarder, forwarder_id)
+    if missing and got and fwd:            # 报了一部分但有缺 → 群里提醒补
+        try:
+            forwarder_service.send_message(
+                db, fwd, "收到，谢谢！还差这几个仓的价格麻烦补一下：" + "、".join(missing),
+                inquiry_id=inquiry_id)
+        except Exception:
+            pass
+    if fwd:
+        _notify_operator_quote(db, inq, fwd, total, currency or quote.currency,
+                               len(got), len(want), missing)
+
+
+def _notify_operator_quote(db, inq, fwd, total, currency, covered, want_n, missing):
+    """货代回价后，通知管该店铺的运营（飞书私信）：覆盖/整包总价/缺仓。"""
+    try:
+        from ..feishu_models import Operator
+        from .. import feishu_client as fc
+        import json as _json
+    except Exception:
+        return
+    b = db.get(Batch, inq.batch_id) if inq else None
+    if not b:
+        return
+    target = None
+    for o in db.query(Operator).all():
+        try:
+            sids = _json.loads(o.scope_brand_ids or "[]")
+        except (ValueError, TypeError):
+            sids = []
+        if o.is_admin or (b.brand_id in sids):
+            target = o
+            break
+    if not target or not target.feishu_open_id:
+        return
+    msg = (f"💰 {fwd.name} 回价：覆盖 {covered}/{want_n} 个仓"
+           + (f"，整包约 {total} {currency}" if total is not None else "")
+           + (f"；还缺 {('、'.join(missing))}（已自动提醒货代补报）" if missing
+              else "；已报全，可发「比价」选货代"))
+    try:
+        fc.send_text(target.feishu_open_id, msg, receive_id_type="open_id")
+    except Exception:
+        pass
 
 
 # ---------------------------------------------------------------- 提取 → QuoteLine
