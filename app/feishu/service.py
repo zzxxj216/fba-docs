@@ -238,7 +238,8 @@ def build_weekly_summary(db, op):
             ids = json.loads(op.scope_brand_ids) or []
         except (ValueError, TypeError):
             ids = []
-    q = db.query(Batch).filter(Batch.placement_options.isnot(None))
+    q = db.query(Batch).filter(Batch.placement_options.isnot(None),
+                               Batch.created_at >= _current_week_start())
     if not (op and op.is_admin):
         if not ids:
             return {"batch_count": 0, "fc_count": 0, "batches": []}
@@ -272,6 +273,14 @@ def build_weekly_summary(db, op):
     return {"batch_count": len(batches), "fc_count": len(all_fcs), "batches": batches}
 
 
+def _current_week_start():
+    """本周一 00:00（按 ISO 周过滤"本周"批次，避免上周/更早的混进来）。"""
+    from datetime import datetime, timedelta
+    now = datetime.now()
+    monday = now - timedelta(days=now.weekday())
+    return monday.replace(hour=0, minute=0, second=0, microsecond=0)
+
+
 def _brand_forwarders(db, brand_id):
     """品牌绑定的货代（委托 inquiry_service，避免重复绑定逻辑）。"""
     from ..services import inquiry_service as s
@@ -286,7 +295,8 @@ def _weekly_built_batches(db, op):
             ids = json.loads(op.scope_brand_ids) or []
         except (ValueError, TypeError):
             ids = []
-    q = db.query(Batch).filter(Batch.placement_options.isnot(None))
+    q = db.query(Batch).filter(Batch.placement_options.isnot(None),
+                               Batch.created_at >= _current_week_start())
     if not (op and op.is_admin):
         if not ids:
             return []
