@@ -388,8 +388,8 @@ def _auto_extract(db, msg):
         if path and os.path.exists(path):
             quote = extract_quote_from_image(db, msg.inquiry_id, msg.forwarder_id, path)
     elif (msg.content or "").strip():
-        convo = _conversation_text(db, msg.inquiry_id, msg.forwarder_id) or msg.content
-        quote = extract_quote_from_text(db, msg.inquiry_id, msg.forwarder_id, convo)
+        # 逐条消息提取 + 按仓合并(_persist_quote)：货代分多条/补报时稳，不会覆盖已报
+        quote = extract_quote_from_text(db, msg.inquiry_id, msg.forwarder_id, msg.content)
     if quote is not None:
         try:
             _post_extract(db, msg.inquiry_id, msg.forwarder_id, quote)
@@ -513,7 +513,8 @@ def _weekly_all_complete(db, target_op):
 
 def _persist_quote(db, inquiry_id, forwarder_id, extracted, raw_message="",
                    raw_image_path=""):
-    """提取结果 dict → InquiryQuote + QuoteLine[]。同一询价同一货代已有则更新（覆盖行）。"""
+    """提取结果 dict → InquiryQuote + QuoteLine[]。**按仓合并(upsert)**：保留旧仓、更新/新增
+    提取到的仓，支持货代分多条增量报价（如先报4仓、再补1仓），不会把已报的覆盖没。"""
     lines = extracted.get("lines") or []
     rep = next((l for l in lines if l.get("price") is not None), {})
     quote = (db.query(InquiryQuote)
@@ -523,27 +524,44 @@ def _persist_quote(db, inquiry_id, forwarder_id, extracted, raw_message="",
         quote = InquiryQuote(inquiry_id=inquiry_id, forwarder_id=forwarder_id)
         db.add(quote)
     quote.source_type = extracted.get("source_type", "text")
-    quote.raw_message = raw_message or quote.raw_message
-    quote.raw_image_path = raw_image_path or quote.raw_image_path
-    quote.currency = extracted.get("currency") or "CNY"
-    quote.price = rep.get("price")
-    quote.unit = rep.get("unit") or ""
-    quote.channel = rep.get("channel") or ""
-    quote.eta_days = rep.get("eta_days")
-    quote.cutoff = rep.get("cutoff") or ""
-    quote.customs_fee_monthly = extracted.get("customs_fee_monthly")
+    if raw_message:
+        quote.raw_message = ((quote.raw_message + "\n") if quote.raw_message else "") + raw_message
+    if raw_image_path:
+        quote.raw_image_path = raw_image_path
+    if extracted.get("currency"):
+        quote.currency = extracted["currency"]
+    elif not quote.currency:
+        quote.currency = "CNY"
+    if rep.get("price") is not None:
+        quote.price, quote.unit = rep.get("price"), rep.get("unit") or quote.unit
+    if rep.get("channel"):
+        quote.channel = rep["channel"]
+    if rep.get("eta_days") is not None:
+        quote.eta_days = rep["eta_days"]
+    if rep.get("cutoff"):
+        quote.cutoff = rep["cutoff"]
+    if extracted.get("customs_fee_monthly") is not None:   # None 不覆盖已有报关费
+        quote.customs_fee_monthly = extracted["customs_fee_monthly"]
     quote.extract_confidence = extracted.get("confidence")
     db.flush()
-    # 重建行（用关系集合，保证 quote.lines 在 commit 后仍同步）
-    quote.lines.clear()
-    db.flush()
-    for ln in lines:
-        quote.lines.append(QuoteLine(
-            fc=ln.get("fc") or "", price=ln.get("price"),
-            currency=ln.get("currency") or quote.currency,
-            unit=ln.get("unit") or "/kg", channel=ln.get("channel") or "",
-            eta_days=ln.get("eta_days"), cutoff=ln.get("cutoff") or "",
-            min_charge=ln.get("min_charge"), remark=(ln.get("remark") or "")[:255]))
+    # 按 FC upsert：更新已有仓、新增新仓；其余旧仓保留（增量合并）
+    by_fc = {(ln.fc or "").upper(): ln for ln in quote.lines}
+    for d in lines:
+        fc = (d.get("fc") or "").upper()
+        ln = by_fc.get(fc)
+        if ln is None:
+            ln = QuoteLine(fc=d.get("fc") or "")
+            quote.lines.append(ln)
+            by_fc[fc] = ln
+        ln.price = d.get("price")
+        ln.currency = d.get("currency") or quote.currency
+        ln.unit = d.get("unit") or "/kg"
+        ln.channel = d.get("channel") or ln.channel or ""
+        ln.eta_days = d.get("eta_days") if d.get("eta_days") is not None else ln.eta_days
+        ln.cutoff = d.get("cutoff") or ln.cutoff or ""
+        ln.min_charge = d.get("min_charge") if d.get("min_charge") is not None else ln.min_charge
+        if d.get("remark"):
+            ln.remark = (d.get("remark") or "")[:255]
     db.commit()
     return quote
 
