@@ -312,26 +312,28 @@ def _weekly_built_batches(db, op):
     return out
 
 
-def weekly_comparison(db, op, quotes):
-    """按批次比价：每个批次，在"报价能全覆盖它某分仓方案"的货代里，比 placement费+头程 总成本。
+USD_CNY = 7.2   # placement费(Amazon, 美金)折算人民币的汇率，用于和头程(货代人民币报价)同口径相加
 
-    quotes: {货代名: {FC: {rate, unit, currency}}}
-    返回按批次 [{batch_id, batch, store, candidates:[{forwarder, option, option_id, fee, head_haul,
-      total, currency, recommended}]（已按 total 升序，最低 recommended=True）}]。
-    一店铺多货代 → 同批多个 candidate 比价；单货代 → 一个 candidate。
+
+def weekly_comparison(db, op, quotes):
+    """按批次比价：列出每批 (货代 × 可覆盖的分仓方案) 的所有组合，比 placement费+头程 总价(CNY)。
+
+    placement 费是美金 → 按 USD_CNY 折人民币，再加头程(人民币)，total 统一为 CNY。
+    返回 [{batch_id, batch, store, combos:[{forwarder, option, option_id, fee_usd, fee_cny,
+      head_haul, total, currency, recommended}]（按 total 升序，最低 recommended）}]。
+    一批多方案 → 多个 combo；一店铺多货代 → 各货代各方案都列，一起比。
     """
     batches = _weekly_built_batches(db, op)
     result = []
     for b, opts in batches:
         brand = db.get(Brand, b.brand_id) if b.brand_id else None
         bound = {f.name for f in _brand_forwarders(db, b.brand_id)}   # 只比该批次绑定的货代
-        cands = []
+        combos = []
         for fname, frates in (quotes or {}).items():
-            if bound and fname not in bound:    # 别的店铺的货代不参与本批比价(防 FC 串台)
+            if bound and fname not in bound:    # 别店铺的货代不参与本批(防 FC 串台)
                 continue
-            cur = next((v.get("currency", "USD") for v in frates.values()), "USD")
-            best = None
-            for o in opts:
+            cur = next((v.get("currency", "CNY") for v in frates.values()), "CNY")
+            for o in opts:                      # 列该货代能全覆盖的每个方案(不再只取最便宜)
                 head, miss = 0.0, False
                 for s in (o.get("shipments") or []):
                     r = frates.get(s.get("fc"))
@@ -341,20 +343,20 @@ def weekly_comparison(db, op, quotes):
                     qty = (s.get("weight_kg") or 0) if "kg" in r.get("unit", "") else (s.get("boxes") or 0)
                     head += qty * (r.get("rate") or 0)
                 if miss:
-                    continue                     # 该货代没全覆盖这个方案
-                total = (o.get("fee_usd") or 0) + head
-                if best is None or total < best["total"]:
-                    best = {"option": o.get("label"), "option_id": o.get("placement_option_id"),
-                            "fee": round(o.get("fee_usd") or 0, 1), "head_haul": round(head, 1),
-                            "total": round(total, 1), "currency": cur}
-            if best:
-                cands.append({"forwarder": fname, **best})
-        cands.sort(key=lambda x: x["total"])
-        for i, c in enumerate(cands):
+                    continue
+                fee_usd = round(o.get("fee_usd") or 0, 1)
+                fee_cny = round(fee_usd * USD_CNY, 1)
+                fcs = [s.get("fc") for s in (o.get("shipments") or [])]
+                combos.append({"forwarder": fname, "option": o.get("label"), "fcs": fcs,
+                               "option_id": o.get("placement_option_id"),
+                               "fee_usd": fee_usd, "fee_cny": fee_cny,
+                               "head_haul": round(head, 1), "total": round(fee_cny + head, 1),
+                               "currency": cur})
+        combos.sort(key=lambda x: x["total"])
+        for i, c in enumerate(combos):
             c["recommended"] = (i == 0)
         result.append({"batch_id": b.id, "batch": b.name,
-                       "store": b.shop_name or (brand.name if brand else ""),
-                       "candidates": cands})
+                       "store": b.shop_name or (brand.name if brand else ""), "combos": combos})
     return result
 
 

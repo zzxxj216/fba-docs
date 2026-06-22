@@ -294,34 +294,35 @@ def weekly_comparison_card(comparison):
     if not comparison:
         return text_card("整包比价", "还没有货代报价。等货代回价后再看比价。", template="orange")
     head = {"tag": "div", "text": {"tag": "lark_md",
-            "content": "**按批次比价**（每批在覆盖它的货代里比 placement费+头程，⭐=最低）——逐批选定货代："}}
+            "content": "**按批次比价**（总价=placement费[美金按≈7.2折人民币] + 头程[人民币]，"
+                       "单位 **¥CNY**，⭐=最低）——逐批选「货代+分仓方案」："}}
     elements = [head]
     for r in comparison:
-        cands = r.get("candidates") or []
+        combos = r.get("combos") or []
         elements.append({"tag": "hr"})
-        if not cands:
+        title = f"📦 **{r.get('batch')}** #{r.get('batch_id')}（{r.get('store', '')}）"
+        if not combos:
             elements.append({"tag": "div", "text": {"tag": "lark_md",
-                            "content": f"📦 **{r.get('batch')}**（{r.get('store', '')}）"
-                                       "　<font color='grey'>等货代报价…</font>"}})
+                            "content": title + "　<font color='grey'>等货代报价…</font>"}})
             continue
-        lines = [f"📦 **{r.get('batch')}**（{r.get('store', '')}）"]
-        for c in cands:
+        lines = [title]
+        for c in combos[:6]:
             star = " ⭐" if c.get("recommended") else ""
-            lines.append(f"　{c['forwarder']}{star}：方案[{c.get('option')}] "
-                         f"placement${c.get('fee')}+头程${c.get('head_haul')} = "
-                         f"**{c.get('total')} {c.get('currency', 'USD')}**")
+            fcs = "、".join(c.get("fcs") or [])
+            lines.append(f"　{c['forwarder']} · [{c.get('option')}:{fcs}]{star}：placement¥{c.get('fee_cny')}"
+                         f"(=${c.get('fee_usd')}) + 头程¥{c.get('head_haul')} = **¥{c.get('total')}**")
         elements.append({"tag": "div", "text": {"tag": "lark_md", "content": "\n".join(lines)}})
         elements.append({"tag": "action", "actions": [
-            _btn(f"✅ 选{c['forwarder']}{'⭐' if c.get('recommended') else ''}",
+            _btn(f"选{c['forwarder']}·{('、'.join(c.get('fcs') or []))[:10]}{'⭐' if c.get('recommended') else ''}",
                  "choose_batch_forwarder",
                  {"batch_id": r.get("batch_id"), "forwarder": c["forwarder"], "option_id": c.get("option_id")},
                  btn_type="primary" if c.get("recommended") else "default")
-            for c in cands[:3]]})
+            for c in combos[:4]]})
     elements.append({"tag": "hr"})
     elements.append({"tag": "note", "elements": [{"tag": "plain_text",
-                    "content": "逐批选定货代 = 锁定该批货代 + 其最优分仓方案；提交分仓到亚马逊仍需人工确认"}]})
+                    "content": "选「货代+方案」= 锁定该批；提交分仓到亚马逊仍需人工确认。汇率可调(USD_CNY)"}]})
     return {"config": {"wide_screen_mode": True},
-            "header": _header("📊 整包比价 · 逐批选定", "purple"),
+            "header": _header("📊 整包比价 · 逐批选", "purple"),
             "elements": elements}
 
 
