@@ -565,6 +565,7 @@ def build_for_batch(db, batch):
                     "label": f"{len(o.get('shipmentIds') or [])} 仓",
                     "fee_usd": round(fees, 2), "shipments": ships})
     batch.placement_options = json.dumps(out, ensure_ascii=False)
+    batch.status = "已建仓"          # 建仓出分仓方案 → 标记已建仓（进度卡据此给按钮）
     db.commit()
     return {"inbound_plan_id": pid, "option_count": len(out)}
 

@@ -409,7 +409,7 @@ def build_progress(db, op):
             ids = json.loads(op.scope_brand_ids) or []
         except (ValueError, TypeError):
             ids = []
-    q = db.query(Batch)
+    q = db.query(Batch).filter(Batch.created_at >= _current_week_start())
     if not (op and op.is_admin):
         if not ids:
             return []
