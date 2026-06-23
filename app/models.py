@@ -72,6 +72,8 @@ class Brand(Base):
     sellfox_warehouse_id = Column(String(32), default="")  # 赛狐仓库id（采购单，空则用采购计划默认仓库）
     default_site = Column(String(16), default="美国")       # 默认站点（未建仓采购计划补站点用）
     amazon_store = Column(String(32), default="")           # mcapi AMAZON_STORES_JSON 的 store key（空=默认店 main）
+    # 固定模板集（JSON int 数组）：配了则该品牌批次默认勾选/生成直接用这套，不再走货代+internal启发式。
+    default_template_ids = Column(Text)
     remark = Column(Text)
     active = Column(Boolean, default=True)
 

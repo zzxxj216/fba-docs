@@ -20,6 +20,10 @@ DEFAULT_RULES = {
     # 对照 RPA 成品口径：Serenorch=1.0(原价)、舟峰/保峰系=1.695(=1.5×1.13)）。
     # 主体级覆盖：scope='company:{id}'。
     "contract_price_factor": ("1.0", "采购合同单价系数(成本×系数)"),
+    # 报关价计算：报关价($) = ROUND(采购价×vat×markup×markup÷汇率,1) + ROUND(箱重÷每箱数÷汇率×系数,1)
+    "customs_markup_factor": ("1.10", "报关价加价系数(应用两次)"),
+    "customs_exchange_rate": ("7", "报关价汇率(¥→$)"),
+    "customs_weight_coeff": ("10", "报关价重量分摊系数"),
     "origin_country": ("中国", "原产国"),
     "dest_country": ("美国", "运抵国"),
     "unit_name": ("盒", "申报计量单位"),
@@ -132,6 +136,26 @@ def price_contract(cost, db=None, company_id=None):
     if cost is None:
         return None
     return cost * get_rule_float(db, "contract_price_factor", company_id, 1.0)
+
+
+def customs_price(cost, box_weight_kg, qty_per_box, db=None, company_id=None):
+    """报关价($) = ROUND(采购价×增值税×加价×加价÷汇率, 1) + ROUND(箱重÷每箱数÷汇率×系数, 1)。
+
+    第一项=货值口径(采购价加价后换美元)，第二项=重量分摊。系数全部走 RuleConfig。
+    采购价缺失返回 None；重量/每箱数缺失时第二项按 0。"""
+    if cost is None:
+        return None
+    vat = get_rule_float(db, "vat_factor", company_id, 1.13)
+    # 两道加价：customs_markup_factor 可调（用户改的那个 1.1→1.5），markup_factor 固定二级加价(1.1)
+    markup1 = get_rule_float(db, "customs_markup_factor", company_id, 1.10)
+    markup2 = get_rule_float(db, "markup_factor", company_id, 1.10)
+    exch = get_rule_float(db, "customs_exchange_rate", company_id, 7.0) or 7.0
+    coeff = get_rule_float(db, "customs_weight_coeff", company_id, 10.0)
+    part1 = round(cost * vat * markup1 * markup2 / exch, 1)
+    part2 = 0.0
+    if box_weight_kg and qty_per_box:
+        part2 = round(box_weight_kg / qty_per_box / exch * coeff, 1)
+    return round(part1 + part2, 1)
 
 
 def insurance_price(unit_price, company):

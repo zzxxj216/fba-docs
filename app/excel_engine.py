@@ -335,6 +335,13 @@ def _fill_table(wb, ws, table, ctx, rows_source):
         n_del = (reserved - len(rows)) * row_step
         _delete_rows_keep_merges(ws, del_start, n_del)
         _adjust_formulas(wb, ws.title, del_start, n_del)
+    elif insert and reserved > 1 and len(rows) >= reserved:
+        # 插行只复制首块，模板第 2..N 个预留行会残留为空行（夹在明细与合计之间）。
+        # 删掉这 (reserved-1) 个空预留行并调整合计 SUM 范围（采购合同总值前的无用空行）。
+        del_start = start_row + len(rows) * row_step
+        n_del = (reserved - 1) * row_step
+        _delete_rows_keep_merges(ws, del_start, n_del)
+        _adjust_formulas(wb, ws.title, del_start, n_del)
 
     for i, row in enumerate(rows):
         base = start_row + i * row_step

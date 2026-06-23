@@ -133,6 +133,15 @@ def generate(db, batch_id, template_ids):
     if not report.get("passed", True):
         return {"blocked": True, "report": report}
 
+    # 未指定模板时，用品牌固定模板集(default_template_ids) —— "固定配置不用勾选"。
+    if not template_ids and batch.brand and (batch.brand.default_template_ids or "").strip():
+        try:
+            parsed = json.loads(batch.brand.default_template_ids)
+            if isinstance(parsed, list):
+                template_ids = [int(x) for x in parsed]
+        except (ValueError, TypeError):
+            pass
+
     result = {"generated": [], "errors": []}
     batch_dir = os.path.join(OUTPUT_DIR, _safe_name(batch.name or f"batch-{batch.id}"))
 

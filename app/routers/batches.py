@@ -96,7 +96,16 @@ def batch_full(batch_id: int, db: Session = Depends(get_db)):
                         "gross_weight": round(total_gross, 2),
                         "value": round(total_value, 2)}
 
-    # 生成区默认勾选：本批货代+内部的启用模板；店铺配了 doc_types 清单则再按文件类型过滤。
+    # 生成区默认勾选：品牌配了固定模板集(default_template_ids)就直接用这套（不用勾选）；
+    # 否则回退到"本批货代+内部启用模板，店铺配 doc_types 再过滤"的启发式。
+    fixed = None
+    if b.brand and (b.brand.default_template_ids or "").strip():
+        try:
+            parsed = json.loads(b.brand.default_template_ids)
+            if isinstance(parsed, list):
+                fixed = [int(x) for x in parsed]
+        except (ValueError, TypeError):
+            fixed = None
     forwarder_ids = {sp.forwarder_id for sp in b.shipments if sp.forwarder_id}
     shop_types = None
     if b.company and b.company.doc_types and b.company.doc_types.strip():
@@ -113,6 +122,10 @@ def batch_full(batch_id: int, db: Session = Depends(get_db)):
         if shop_types is not None and t.doc_type not in shop_types:
             continue
         suggested.append(t.id)
+    # 品牌固定集优先（保持模板表里仍存在且启用的）。
+    if fixed is not None:
+        active_ids = {t.id for t in db.query(Template).filter(Template.active.is_(True)).all()}
+        suggested = [tid for tid in fixed if tid in active_ids]
     result["suggested_template_ids"] = suggested
     result["sop"] = sop_flow.compute(db, b)
     try:

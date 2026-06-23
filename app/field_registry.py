@@ -236,9 +236,7 @@ def _item_row(it, seq, db, company):
     """明细行 → {"item": {...}, "calc": {...}}（calc 按行，基于本行成本/单价）。"""
     p = it.product
     qty = it.qty or 0
-    price = it.customs_unit_price
-    if price is None and p is not None:
-        price = p.unit_price_default
+    price = it.customs_unit_price   # 人工/已存报关价优先；缺失时下面按公式现算
     cost = it.purchase_cost
     if cost is None and p is not None:
         cost = p.purchase_cost_default
@@ -261,6 +259,12 @@ def _item_row(it, seq, db, company):
         carton_in = (_cm_to_in(carton_l), _cm_to_in(carton_w), _cm_to_in(carton_h))
     qty_per_box = it.qty_per_box if it.qty_per_box is not None \
         else (p.qty_per_box if p else None)
+
+    # 报关价：未人工录入时按公式现算（采购价加价÷汇率 + 重量分摊）
+    customs_price_calc = rule_engine.customs_price(
+        cost, p.box_weight_kg if p else None, qty_per_box, db, cid)
+    if price is None:
+        price = customs_price_calc
 
     item = {
         "seq": seq,
@@ -324,6 +328,7 @@ def _item_row(it, seq, db, company):
         "amount_contract": (pc * qty) if pc is not None else None,
         "insurance_price": ins,
         "insurance_amount": _round(ins * qty, 2) if ins is not None else None,
+        "customs_price": customs_price_calc,
     }
     return {"item": item, "calc": calc}
 

@@ -24,3 +24,7 @@ Thumbs.db
 
 # 隧道二进制(本地)
 tools/*.exe
+
+# 临时调试脚本
+/_*.py
+tools/_*.py
