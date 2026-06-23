@@ -450,6 +450,11 @@ def build_for_batch(db, batch):
     箱规/数量取批次明细的产品箱规；store 按品牌 amazon_store（空=默认 main）。
     """
     from ..models import Batch  # 避免顶层循环引用
+    if batch.inbound_plan_id:        # 已建过仓 → 直接返回，不重复创建真实亚马逊入库计划
+        try:
+            return json.loads(batch.placement_options or "[]")
+        except (ValueError, TypeError):
+            return []
     raw = [{"msku": it.msku, "quantity": it.qty}
            for sp in batch.shipments for it in sp.items if (it.qty or 0) > 0]
     if not raw:
