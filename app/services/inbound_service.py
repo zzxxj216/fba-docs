@@ -21,17 +21,38 @@ from ..models import Brand, InboundPlan, Product
 CM_PER_IN = 2.54
 LB_PER_KG = 2.20462
 
-# 默认发货地址（mcapi FbaSourceAddress 用 snake_case；SOP 发货地，先固定，后续可按公司主体配置）
-SOURCE_ADDRESS = {
-    "name": "Xiao Wu",
-    "company_name": "hangzhou muyufang kejiyouxiangongsi",
-    "address_line1": "xinwankejichuangxinyuan 1-417shi",
-    "city": "Hangzhou",
-    "state_or_province_code": "Zhejiang",
-    "country_code": "CN",
-    "postal_code": "310000",
-    "phone_number": "17767158681",
+# 发货地址（mcapi FbaSourceAddress 用 snake_case）。**按店铺(amazon_store)配置**——
+# 不同店铺货物从不同地点发，建仓 sourceAddress 必须用对应店铺自己的发货地。
+SOURCE_ADDRESS_BY_STORE = {
+    "qifengz": {        # HUHOLE
+        "name": "Xiao Wu",
+        "company_name": "hangzhou muyufang kejiyouxiangongsi",
+        "address_line1": "xinwankejichuangxinyuan 1-417shi",
+        "city": "Hangzhou", "state_or_province_code": "Zhejiang",
+        "country_code": "CN", "postal_code": "310000", "phone_number": "17767158681",
+    },
+    "serenorch": {      # Serenorch（玫玑研·上海主体）
+        "name": "HongJun Sun",
+        "company_name": "Mei Ji Yan Ri Yong Pin (Shanghai) Co., Ltd.",
+        "address_line1": "suidelu 2nong 20hao 5ceng A503shi, putuoqu",
+        "city": "Shanghai", "state_or_province_code": "Shanghai",
+        "country_code": "CN", "postal_code": "200060", "phone_number": "19116409320",
+    },
+    "bfpeaky": {        # BFPeaky（周峰科技·杭州）
+        "name": "Qifeng Zhou",
+        "company_name": "hangzhouzhoufengkejiyouxiangongsi",
+        "address_line1": "Xinwanjiedao, xinwankejichuangxinyuan2-206-2shi",
+        "city": "Hangzhou", "state_or_province_code": "Zhejiang",
+        "country_code": "CN", "postal_code": "311228", "phone_number": "17706538390",
+    },
 }
+# 默认发货地址（未配置店铺时兜底）
+SOURCE_ADDRESS = SOURCE_ADDRESS_BY_STORE["qifengz"]
+
+
+def _source_address(store):
+    """按店铺(amazon_store)取发货地址；未配置则用默认。"""
+    return SOURCE_ADDRESS_BY_STORE.get((store or "").strip()) or SOURCE_ADDRESS
 
 ST_CREATED = "计划已创建"
 ST_PACKED = "装箱已确认"
@@ -236,15 +257,16 @@ def create_plan(db, brand_id, raw_items, source_type="manual", source_ref="", na
         if it["expiration"]:
             d["expiration"] = it["expiration"]
         api_items.append(d)
+    src = _source_address(store)
     resp = fba.call("POST", "/inbound-plans", store=store, timeout=90,
-                    json={"name": name or None, "source_address": SOURCE_ADDRESS, "items": api_items})
+                    json={"name": name or None, "source_address": src, "items": api_items})
     plan_id = resp.get("inboundPlanId", "")
     op = resp.get("operationId", "")
     rec = InboundPlan(
         source_type=source_type, source_ref=source_ref, brand_id=brand_id, store=store or "",
         name=name, status=ST_CREATED, amazon_inbound_plan_id=plan_id, current_operation_id=op,
         items_snapshot=json.dumps(items, ensure_ascii=False),
-        source_address=json.dumps(SOURCE_ADDRESS, ensure_ascii=False))
+        source_address=json.dumps(src, ensure_ascii=False))
     db.add(rec)
     db.commit()
     db.refresh(rec)
@@ -441,7 +463,7 @@ def build_for_batch(db, batch):
 
     def _create():
         return fba.call("POST", "/inbound-plans", store=store, timeout=90,
-                        json={"name": batch.name, "source_address": SOURCE_ADDRESS, "items": api_items})
+                        json={"name": batch.name, "source_address": _source_address(store), "items": api_items})
 
     # 部分 SKU（无标/Amazon贴标）只接受 labelOwner/prepOwner=NONE：亚马逊逐条报
     # "ERROR: <MSKU> does not require labelOwner ... Accepted values: [NONE]"。
