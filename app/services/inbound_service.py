@@ -682,26 +682,34 @@ def _config_self_delivery(pid, placement_option_id, shipment_ids, store):
     """给各货件配自送(非合作承运)运输：generate → 选 USE_YOUR_OWN_CARRIER → confirm。"""
     import time
     from datetime import date, timedelta
-    rtw = {"start": (date.today() + timedelta(days=3)).strftime("%Y-%m-%dT00:00:00Z")}
+    # readyToShipWindow = 这周的周五再向后推 50 天。实测窗口太近时部分货件出不了 OTHER(自有承运)
+    # 选项；推远后基本都有。所有货件都用 OTHER → 同一承运、不会 carrier 不一致(FBA_INB_0354)。
+    _today = date.today()
+    _friday = _today + timedelta(days=(4 - _today.weekday()) % 7)   # 这周周五(今天周五则今天)
+    rtw = {"start": (_friday + timedelta(days=50)).strftime("%Y-%m-%dT00:00:00Z")}
     cfgs = [{"shipmentId": sid, "readyToShipWindow": rtw} for sid in shipment_ids]
-    g = fba.call("POST", f"/inbound-plans/{pid}/transportation-options/generate", store=store,
-                 json={"placement_option_id": placement_option_id,
-                       "shipment_transportation_configurations": cfgs})
-    fba.wait_operation(g["operationId"], store=store, timeout=300)
-    all_opts = []                          # 生成后选项可能最终一致延迟，空则重试几次再列
-    for _ in range(6):
-        opts = fba.call("GET", f"/inbound-plans/{pid}/transportation-options",
-                        params={"placement_option_id": placement_option_id}, store=store) or {}
-        all_opts = opts.get("transportationOptions") or []
-        if all_opts:
+    # 多次采样：OTHER 选项时有时无 → 每次重新 generate，按 shipmentId 逐货件取 OTHER LTL，
+    # 直到所有货件都拿到 OTHER(按 placementOptionId 查只返回第一个货件，必须逐货件查)。
+    selections, missing = [], list(shipment_ids)
+    for _ in range(8):
+        g = fba.call("POST", f"/inbound-plans/{pid}/transportation-options/generate", store=store,
+                     json={"placement_option_id": placement_option_id,
+                           "shipment_transportation_configurations": cfgs})
+        fba.wait_operation(g["operationId"], store=store, timeout=300)
+        selections, missing = [], []
+        for sid in shipment_ids:
+            opts = fba.call("GET", f"/inbound-plans/{pid}/transportation-options",
+                            params={"shipment_id": sid, "page_size": 20}, store=store) or {}
+            chosen = _pick_self_delivery(opts.get("transportationOptions") or [], sid)
+            if chosen:
+                selections.append({"shipmentId": sid, "transportationOptionId": chosen})
+            else:
+                missing.append(sid)
+        if not missing:
             break
-        time.sleep(5)
-    selections = []
-    for sid in shipment_ids:
-        chosen = _pick_self_delivery(all_opts, sid)
-        if not chosen:
-            raise RuntimeError(f"货件 {sid} 没有自送(USE_YOUR_OWN_CARRIER)运输选项")
-        selections.append({"shipmentId": sid, "transportationOptionId": chosen})
+        time.sleep(3)
+    if missing:
+        raise RuntimeError(f"多次采样后仍有货件无 OTHER 自送 LTL 选项: {missing}")
     # 自送(非合作承运)货件：确认运输前必须先确认每个货件的"送仓时间窗"（幂等）
     for sid in shipment_ids:
         try:
@@ -732,20 +740,22 @@ def _config_self_delivery(pid, placement_option_id, shipment_ids, store):
             raise
 
 
-SELF_DELIVERY_MODE = "FREIGHT_LTL"   # 自送默认优先整车/托盘(LTL)，而非小包(SPD)
+SELF_DELIVERY_MODE = "FREIGHT_LTL"   # 自送只用整车/托盘(LTL)，不用小包(SPD)
 
 
-def _pick_self_delivery(all_opts, shipment_id, prefer_mode=SELF_DELIVERY_MODE):
-    """挑该货件的自送选项(USE_YOUR_OWN_CARRIER)。**优先 FREIGHT_LTL(整托/卡车)**，
-    其次其它(如 GROUND_SMALL_PARCEL 小包)；自送是货代卡车送整批，LTL 才对。"""
-    own = [o for o in all_opts if o.get("shipmentId") == shipment_id
-           and "OWN" in (o.get("shippingSolution") or "").upper()]
-    if not own:    # 兜底：无明显标志时取该货件没有亚马逊报价(quote)的(自送通常无报价)
-        own = [o for o in all_opts if o.get("shipmentId") == shipment_id and not o.get("quote")]
-    if not own:
-        return None
-    own.sort(key=lambda o: 0 if o.get("shippingMode") == prefer_mode else 1)  # LTL 优先
-    return own[0].get("transportationOptionId")
+def _is_other_carrier(c):
+    """承运商是否为 OTHER(自有承运/不在列表)——alphaCode 为空或名称为 Other。"""
+    c = c or {}
+    return c.get("alphaCode") in (None, "", "OTHER") or (c.get("name") or "").strip().upper() == "OTHER"
+
+
+def _pick_self_delivery(all_opts, shipment_id, mode=SELF_DELIVERY_MODE):
+    """挑该货件的自送 LTL + **承运商 OTHER(自有承运)** 选项。只用 LTL、不用 SPD 小包。
+    所有货件都用 OTHER → 同一承运商，避免 FBA_INB_0354(carrier 不一致)。无则返回 None。"""
+    ltl_other = [o for o in all_opts if o.get("shipmentId") == shipment_id
+                 and "OWN" in (o.get("shippingSolution") or "").upper()
+                 and o.get("shippingMode") == mode and _is_other_carrier(o.get("carrier"))]
+    return ltl_other[0].get("transportationOptionId") if ltl_other else None
 
 
 def fetch_labels(db, batch, kind="box", page_type=None, live=False):
