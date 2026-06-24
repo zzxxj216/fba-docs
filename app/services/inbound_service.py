@@ -122,12 +122,20 @@ def _fill_box_spec_from_sellfox(db, msku, p):
         except (TypeError, ValueError):
             return None
 
-    # msku 可能带尾部引号(如 6")而赛狐商品库不带 → 依次尝试原值、去尾部引号/空白的变体
+    # msku(Amazon)和赛狐商品库 sku 常有差异：尾部引号(6")、站点后缀(-US/-UK…)。
+    # 依次尝试：原值、去站点后缀、去尾部引号、两者都去。
+    import re
+    bases = [msku]
+    m = re.match(r"^(.*)-(US|UK|CA|DE|FR|IT|ES|JP|AU|MX|NL|SE|PL|BE|TR|SG|AE|SA|BR|IN)$",
+                 msku, re.I)
+    if m:
+        bases.append(m.group(1))
     variants, seen = [], set()
-    for v in (msku, msku.rstrip('"”″\' ').strip()):
-        if v and v not in seen:
-            seen.add(v)
-            variants.append(v)
+    for b in bases:
+        for v in (b, b.rstrip('"”″\' ').strip()):
+            if v and v not in seen:
+                seen.add(v)
+                variants.append(v)
     row = None
     for sku_try in variants:
         try:
