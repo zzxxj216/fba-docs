@@ -537,7 +537,7 @@ def build_for_batch(db, batch):
     # labelOwner/prepOwner 改 NONE、或补效期(今天+1月)，再重试；重试前取消已建的草稿计划避免残留。
     resp = None
     last_err = ""
-    for _ in range(4):
+    for _ in range(8):
         pid_try = None
         try:
             r = _create()
@@ -553,10 +553,12 @@ def build_for_batch(db, batch):
                     fba.call("PUT", f"/inbound-plans/{pid_try}/cancel", store=store, timeout=60)
                 except Exception:
                     pass
-            none_label = set(re.findall(r"ERROR:\s*(\S+)\s+does not require labelOwner", last_err))
-            none_prep = set(re.findall(r"ERROR:\s*(\S+)\s+does not require prepOwner", last_err))
+            # 注意：错误来自 JSON，含引号的 SKU 会被转义成 6\"，需去掉反斜杠再匹配 api_items
+            _clean = lambda xs: {s.replace("\\", "") for s in xs}
+            none_label = _clean(re.findall(r"ERROR:\s*(\S+)\s+does not require labelOwner", last_err))
+            none_prep = _clean(re.findall(r"ERROR:\s*(\S+)\s+does not require prepOwner", last_err))
             # 需效期的 SKU：FBA_INB_0180 "resource '<MSKU>' ... Expiration date required"
-            need_exp = (set(re.findall(r"resource '([^']+)'", last_err))
+            need_exp = (_clean(re.findall(r"resource '([^']+)'", last_err))
                         if "Expiration date required" in last_err else set())
             changed = False
             for ai in api_items:
@@ -573,11 +575,13 @@ def build_for_batch(db, batch):
                 break
     if resp is None:
         acct = store or "main(默认)"
-        if "not valid" in last_err or "MSKU" in last_err or "BadRequest" in last_err:
+        # owner/效期类是可修的校验问题，不是账户问题——别误导成账户没映射
+        owner_issue = ("does not require" in last_err or "Expiration date required" in last_err)
+        if not owner_issue and ("not valid" in last_err or "MSKU" in last_err):
             raise RuntimeError(
                 f"建仓账户=「{acct}」拒绝了这些 SKU（多半是该品牌没映射到正确的亚马逊账户）。"
-                f"请在「主体与品牌」给品牌设置 amazon_store、并确保该账户凭据已配进 mcapi。原始：{last_err[:200]}")
-        raise RuntimeError(last_err)
+                f"请在「主体与品牌」给品牌设置 amazon_store、并确保该账户凭据已配进 mcapi。原始：{last_err[:300]}")
+        raise RuntimeError(f"建仓 create 校验失败（已自动重试 owner/效期仍未通过）：{last_err[:500]}")
     pid = resp.get("inboundPlanId", "")
     batch.inbound_plan_id = pid
     db.commit()
