@@ -955,13 +955,25 @@ def fetch_labels(db, batch, kind="box", page_type=None, live=False):
 
 
 def _backfill_shipments(batch, pid, shipment_ids, store):
-    """读确认后的 FC 货件(fc/地址/确认号)返回（持久化到 Shipment 留给发托书环节）。"""
+    """读确认后的 FC 货件(fc/地址/确认号)，**持久化 FC 收货地址到本地 Shipment**(发托书要用)。"""
     out = []
+    by_fc = {sp.fc_code: sp for sp in batch.shipments if sp.fc_code}
     for sid in shipment_ids:
         sh = fba.call("GET", f"/inbound-plans/{pid}/shipments/{sid}", store=store) or {}
         dest = sh.get("destination", {}) or {}
         addr = dest.get("address", {}) or {}
-        out.append({"shipmentId": sid, "fc": dest.get("warehouseId"),
+        fc = dest.get("warehouseId")
+        sp = by_fc.get(fc)
+        if sp is not None:                    # 把亚马逊返回的 FC 收货地址写回本地货件
+            cid = sh.get("shipmentConfirmationId")
+            if cid:
+                sp.amazon_shipment_id = cid
+            for col, key in (("address_line1", "addressLine1"), ("address_line2", "addressLine2"),
+                             ("city", "city"), ("state", "stateOrProvinceCode"),
+                             ("postal_code", "postalCode"), ("country_code", "countryCode")):
+                if addr.get(key):
+                    setattr(sp, col, addr.get(key))
+        out.append({"shipmentId": sid, "fc": fc,
                     "confirmationId": sh.get("shipmentConfirmationId"),
                     "city": addr.get("city"), "state": addr.get("stateOrProvinceCode"),
                     "status": sh.get("status")})
