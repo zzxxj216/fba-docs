@@ -11,6 +11,7 @@
 import io
 import json
 import math
+import os
 import re
 
 from openpyxl import load_workbook
@@ -908,16 +909,20 @@ def fetch_labels(db, batch, kind="box", page_type=None, live=False):
     if kind == "box":
         p = fba.call("GET", f"/inbound-plans/{pid}", store=store) or {}
         for sh in (p.get("shipments") or []):
+            sid = sh.get("shipmentId")
             conf = sh.get("shipmentConfirmationId")
+            if not conf and sid:           # plan 列表层 confirmationId 常为空 → 取货件详情
+                det = fba.call("GET", f"/inbound-plans/{pid}/shipments/{sid}", store=store) or {}
+                conf = det.get("shipmentConfirmationId")
             if not conf:
                 continue
-            boxes = fba.call("GET", f"/inbound-plans/{pid}/shipments/{sh.get('shipmentId')}/boxes",
+            boxes = fba.call("GET", f"/inbound-plans/{pid}/shipments/{sid}/boxes",
                              store=store) or {}
             n_boxes = len(boxes.get("boxes") or []) or None
-            params = {"PageType": page_type, "LabelType": "BARCODE_2D"}
-            if n_boxes:                    # 非合作承运(自送)货件 PageSize 必填
-                params["PageSize"] = n_boxes
-                params["PageStartIndex"] = 0
+            params = {"page_type": page_type, "label_type": "BARCODE_2D"}
+            if n_boxes:                    # 非合作承运(自送)货件 page_size 必填(传箱数)
+                params["page_size"] = n_boxes
+                params["page_start_index"] = 0
             url = _url(fba.call("GET", f"/shipments/{conf}/labels", params=params, store=store))
             if not url:
                 continue
