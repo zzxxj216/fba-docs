@@ -968,6 +968,8 @@ def _backfill_shipments(batch, pid, shipment_ids, store):
             cid = sh.get("shipmentConfirmationId")
             if cid:
                 sp.amazon_shipment_id = cid
+            if sh.get("amazonReferenceId"):   # Amazon reference ID(托书要用)
+                sp.reference_id = sh.get("amazonReferenceId")
             for col, key in (("address_line1", "addressLine1"), ("address_line2", "addressLine2"),
                              ("city", "city"), ("state", "stateOrProvinceCode"),
                              ("postal_code", "postalCode"), ("country_code", "countryCode")):
