@@ -105,6 +105,53 @@ def _dict(rec):
     }
 
 
+def _fill_box_spec_from_sellfox(db, msku, p):
+    """本地缺箱规时，从赛狐商品库 /api/commodity/pageList.json 拉箱规回填 Product 并缓存。
+    赛狐字段：cartonLength/Width/Height(cm)、cartonWeight(kg/箱)、cartonQty(每箱数)。拉不到不阻塞。"""
+    from .. import sellfox_client as sf
+
+    def _f(v):
+        try:
+            return float(v) if v not in (None, "") else None
+        except (TypeError, ValueError):
+            return None
+
+    def _i(v):
+        try:
+            return int(float(v)) if v not in (None, "") else None
+        except (TypeError, ValueError):
+            return None
+
+    # msku 可能带尾部引号(如 6")而赛狐商品库不带 → 依次尝试原值、去尾部引号/空白的变体
+    variants, seen = [], set()
+    for v in (msku, msku.rstrip('"”″\' ').strip()):
+        if v and v not in seen:
+            seen.add(v)
+            variants.append(v)
+    row = None
+    for sku_try in variants:
+        try:
+            data = sf.call("/api/commodity/pageList.json",
+                           {"pageNo": 1, "pageSize": 10, "skus": [sku_try]}) or {}
+            row = next((x for x in (data.get("rows") or []) if (x.get("sku") or "").strip() == sku_try), None)
+        except Exception:
+            row = None
+        if row:
+            break
+    if not row:
+        return p
+    if p is None:
+        p = Product(sku=msku)
+        db.add(p)
+    p.carton_l_cm = p.carton_l_cm or _f(row.get("cartonLength"))
+    p.carton_w_cm = p.carton_w_cm or _f(row.get("cartonWidth"))
+    p.carton_h_cm = p.carton_h_cm or _f(row.get("cartonHeight"))
+    p.box_weight_kg = p.box_weight_kg or _f(row.get("cartonWeight"))
+    p.qty_per_box = p.qty_per_box or _i(row.get("cartonQty"))
+    db.flush()
+    return p
+
+
 def _resolve_items(db, raw_items):
     """补全/校验建仓明细。
 
@@ -118,6 +165,10 @@ def _resolve_items(db, raw_items):
         if not msku or qty <= 0:
             raise RuntimeError(f"明细缺 msku 或数量<=0：{r}")
         p = db.query(Product).filter(Product.sku == msku).first()
+        # 本地缺箱规 → 从赛狐商品库回查补全并缓存(手填了 l_in 的不查)
+        if not r.get("l_in") and not (p and p.carton_l_cm and p.carton_w_cm
+                                      and p.carton_h_cm and p.qty_per_box and p.box_weight_kg):
+            p = _fill_box_spec_from_sellfox(db, msku, p)
         upb = int(r.get("units_per_box") or (p.qty_per_box if p and p.qty_per_box else 0) or 0)
         l_in = r.get("l_in") or (round(p.carton_l_cm / CM_PER_IN, 2) if p and p.carton_l_cm else None)
         w_in = r.get("w_in") or (round(p.carton_w_cm / CM_PER_IN, 2) if p and p.carton_w_cm else None)
