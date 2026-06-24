@@ -892,7 +892,7 @@ def fetch_labels(db, batch, kind="box", page_type=None, live=False):
     if not pid:
         raise RuntimeError("批次未建仓（无 inbound_plan_id）")
     store = _store(db, batch.brand_id) or None
-    page_type = page_type or ("PackageLabel_Letter_6" if kind == "box" else "LETTER_30")
+    page_type = page_type or ("PackageLabel_Thermal" if kind == "box" else "LETTER_30")
     plan = {"batch": batch.name, "kind": kind, "page_type": page_type, "inbound_plan_id": pid,
             "steps": ["取标签下载链接", "下载 PDF", "按页型剪切成单张", "归档"]}
     if not live:
@@ -929,7 +929,10 @@ def fetch_labels(db, batch, kind="box", page_type=None, live=False):
             raw = os.path.join(out_dir, f"{conf}_原始.pdf")
             cut = os.path.join(out_dir, f"{conf}_单张.pdf")
             lt.download_pdf(url, raw)
-            n = lt.cut_by_page_type(raw, cut, page_type)
+            if str(page_type).startswith("PackageLabel_Thermal"):   # 热敏每箱一页 → 按内容裁白边
+                n = lt.crop_to_content(raw, cut)
+            else:                                                    # 多合一页 → 网格切单张
+                n = lt.cut_by_page_type(raw, cut, page_type)
             saved.append({"shipment": conf, "boxes": n_boxes, "cut_pdf": cut, "labels": n})
     else:  # fnsku
         items = [{"msku": it.msku, "quantity": it.qty}

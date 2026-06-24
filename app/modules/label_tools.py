@@ -108,6 +108,37 @@ def merge_pdfs(files, dest_pdf):
     return dest_pdf, n
 
 
+def crop_to_content(src_pdf, dest_pdf, margin_pt=4):
+    """把每页裁切到"内容外框"(文字块+图像+矢量并集)+边距。
+    热敏箱唛(4×6)四周有大量白边 → 裁成贴标内容区(约 3.88×3.13in)。返回页数。"""
+    doc = fitz.open(src_pdf)
+    n = doc.page_count
+    for page in doc:
+        rects = []
+        for b in (page.get_text("blocks") or []):
+            rects.append(fitz.Rect(b[:4]))
+        for img in (page.get_image_info() or []):
+            if img.get("bbox"):
+                rects.append(fitz.Rect(img["bbox"]))
+        for d in (page.get_drawings() or []):     # 条码常是矢量
+            if d.get("rect"):
+                rects.append(fitz.Rect(d["rect"]))
+        rects = [r for r in rects if r.is_valid and not r.is_empty]
+        if not rects:
+            continue
+        bbox = rects[0]
+        for r in rects[1:]:
+            bbox |= r
+        bbox = fitz.Rect(bbox.x0 - margin_pt, bbox.y0 - margin_pt,
+                         bbox.x1 + margin_pt, bbox.y1 + margin_pt) & page.rect
+        if bbox.is_valid and not bbox.is_empty:
+            page.set_cropbox(bbox)
+    os.makedirs(os.path.dirname(os.path.abspath(dest_pdf)), exist_ok=True)
+    doc.save(dest_pdf, deflate=True)
+    doc.close()
+    return n
+
+
 def cut_by_page_type(src_pdf, dest_pdf, page_type, **override):
     """按页型预设剪切。未知页型回退 1×1（原样）。override 可覆盖 rows/cols/margin…。"""
     spec = dict(PRESETS.get(page_type, {"rows": 1, "cols": 1}))
