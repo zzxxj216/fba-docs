@@ -778,29 +778,40 @@ def _config_self_delivery(pid, placement_option_id, shipment_ids, store):
     _friday = _today + timedelta(days=(4 - _today.weekday()) % 7)   # 这周周五(今天周五则今天)
     rtw = {"start": (_friday + timedelta(days=50)).strftime("%Y-%m-%dT00:00:00Z")}
     cfgs = [{"shipmentId": sid, "readyToShipWindow": rtw} for sid in shipment_ids]
-    # 多次采样：OTHER 选项时有时无 → 每次重新 generate，按 shipmentId 逐货件取 OTHER LTL，
-    # 直到所有货件都拿到 OTHER(按 placementOptionId 查只返回第一个货件，必须逐货件查)。
-    selections, missing = [], list(shipment_ids)
-    for _ in range(8):
+    def _gen():
         g = fba.call("POST", f"/inbound-plans/{pid}/transportation-options/generate", store=store,
                      json={"placement_option_id": placement_option_id,
                            "shipment_transportation_configurations": cfgs})
-        fba.wait_operation(g["operationId"], store=store, timeout=300)
-        selections, missing = [], []
+        if g.get("operationId"):
+            fba.wait_operation(g["operationId"], store=store, timeout=300)
+    # 只用 OTHER(自有承运) + LTL：多次采样，直到某次 generate 里**所有货件同时**拿到 OTHER-LTL。
+    # 实测每仓单次约 60-80% 有 OTHER-LTL，5 仓同时约 14%/次，故采样上限设大(默认 30 次)。
+    # confirm 必须一次带全部货件(否则 shipment ids do not match)，全用 OTHER → 同一承运、不冲突。
+    selections = None
+    for _i in range(SELF_DELIVERY_SAMPLES):
+        _gen()
+        per = []                              # 每货件的 OTHER-LTL optionId（没有则 None）
         for sid in shipment_ids:
             opts = fba.call("GET", f"/inbound-plans/{pid}/transportation-options",
                             params={"shipment_id": sid, "page_size": 20}, store=store) or {}
-            chosen = _pick_self_delivery(opts.get("transportationOptions") or [], sid)
-            if chosen:
-                selections.append({"shipmentId": sid, "transportationOptionId": chosen})
-            else:
-                missing.append(sid)
-        if not missing:
+            other_id = next((o.get("transportationOptionId")
+                             for o in (opts.get("transportationOptions") or [])
+                             if "OWN" in (o.get("shippingSolution") or "").upper()
+                             and o.get("shippingMode") == SELF_DELIVERY_MODE
+                             and _is_other_carrier(o.get("carrier"))), None)
+            per.append(other_id)
+        hit = sum(1 for x in per if x)
+        print(f"[自送采样] 第{_i + 1}/{SELF_DELIVERY_SAMPLES}次: OTHER-LTL 命中 {hit}/{len(shipment_ids)} 仓",
+              flush=True)
+        if all(per):                          # 5 仓同时拿到 OTHER-LTL
+            selections = [{"shipmentId": sid, "transportationOptionId": per[i]}
+                          for i, sid in enumerate(shipment_ids)]
+            print("[自送采样] ✅ 5 仓同时命中 OTHER-LTL，开始确认", flush=True)
             break
-        time.sleep(3)
-    if missing:
-        raise RuntimeError(f"多次采样后仍有货件无 OTHER 自送 LTL 选项: {missing}")
-    # 自送(非合作承运)货件：确认运输前必须先确认每个货件的"送仓时间窗"（幂等）
+        time.sleep(2)
+    if selections is None:
+        raise RuntimeError(f"采样 {SELF_DELIVERY_SAMPLES} 次仍无法让所有货件同时拿到 OTHER-LTL")
+    # 送仓时间窗(每货件，自送 LTL 的 precondition；幂等)
     for sid in shipment_ids:
         try:
             g2 = fba.call("POST", f"/inbound-plans/{pid}/shipments/{sid}/delivery-window-options/generate",
@@ -811,7 +822,7 @@ def _config_self_delivery(pid, placement_option_id, shipment_ids, store):
                            store=store) or {}
             windows = dwo.get("deliveryWindowOptions") or dwo.get("deliveryWindowOptionsList") or []
             if not windows:
-                raise RuntimeError(f"货件 {sid} 无可选送仓时间窗(delivery window)")
+                raise RuntimeError(f"货件 {sid} 无可选送仓时间窗")
             wid = windows[0].get("deliveryWindowOptionId") or windows[0].get("id")
             cf2 = fba.call("POST",
                            f"/inbound-plans/{pid}/shipments/{sid}/delivery-window-options/{wid}/confirm",
@@ -821,22 +832,31 @@ def _config_self_delivery(pid, placement_option_id, shipment_ids, store):
         except RuntimeError as e:
             if not _already_done(e):
                 raise
+    # 一次性 confirm 全部货件(同一承运商)
     try:
         cf = fba.call("POST", f"/inbound-plans/{pid}/transportation-options/confirm", store=store,
                       json={"selections": selections})
-        fba.wait_operation(cf["operationId"], store=store, timeout=300)
+        if cf.get("operationId"):
+            fba.wait_operation(cf["operationId"], store=store, timeout=300)
     except RuntimeError as e:
         if not _already_done(e):
             raise
 
 
 SELF_DELIVERY_MODE = "FREIGHT_LTL"   # 自送只用整车/托盘(LTL)，不用小包(SPD)
+SELF_DELIVERY_SAMPLES = 30           # 采样上限：重复 generate 直到所有货件同时拿到 OTHER-LTL
 
 
 def _is_other_carrier(c):
     """承运商是否为 OTHER(自有承运/不在列表)——alphaCode 为空或名称为 Other。"""
     c = c or {}
     return c.get("alphaCode") in (None, "", "OTHER") or (c.get("name") or "").strip().upper() == "OTHER"
+
+
+def _carrier_key(c):
+    """承运商归一化键：OTHER(自有承运) 或 alphaCode/名称。用于跨货件求公共承运商。"""
+    c = c or {}
+    return "OTHER" if _is_other_carrier(c) else (c.get("alphaCode") or (c.get("name") or ""))
 
 
 def _pick_self_delivery(all_opts, shipment_id, mode=SELF_DELIVERY_MODE):
