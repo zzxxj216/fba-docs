@@ -156,6 +156,15 @@ def _fill_box_spec_from_sellfox(db, msku, p):
     p.carton_h_cm = p.carton_h_cm or _f(row.get("cartonHeight"))
     p.box_weight_kg = p.box_weight_kg or _f(row.get("cartonWeight"))
     p.qty_per_box = p.qty_per_box or _i(row.get("cartonQty"))
+    # 报关信息一并回填(缺则补)——生成托书/报关资料的校验要用
+    p.name_customs_cn = p.name_customs_cn or (row.get("declareNameCh") or "")
+    p.name_customs_en = p.name_customs_en or (row.get("declareNameEn") or "")
+    p.hs_code = p.hs_code or (row.get("hsCode") or "")
+    p.material = p.material or (row.get("declareMaterial") or row.get("materialQuality") or "")
+    p.usage = p.usage or (row.get("declareUseTo") or row.get("useTo") or "")
+    p.declare_elements = p.declare_elements or (row.get("declareElements") or "")
+    p.unit_price_default = p.unit_price_default or _f(row.get("declareCharge"))
+    p.purchase_cost_default = p.purchase_cost_default or _f(row.get("purchaseCost"))
     db.flush()
     return p
 
@@ -173,9 +182,12 @@ def _resolve_items(db, raw_items):
         if not msku or qty <= 0:
             raise RuntimeError(f"明细缺 msku 或数量<=0：{r}")
         p = db.query(Product).filter(Product.sku == msku).first()
-        # 本地缺箱规 → 从赛狐商品库回查补全并缓存(手填了 l_in 的不查)
-        if not r.get("l_in") and not (p and p.carton_l_cm and p.carton_w_cm
-                                      and p.carton_h_cm and p.qty_per_box and p.box_weight_kg):
+        # 本地缺箱规或缺报关信息 → 从赛狐商品库回查补全并缓存(手填了 l_in 的不查箱规)
+        need_box = not (p and p.carton_l_cm and p.carton_w_cm and p.carton_h_cm
+                        and p.qty_per_box and p.box_weight_kg)
+        need_customs = not (p and p.hs_code and p.name_customs_cn and p.material
+                            and p.unit_price_default)
+        if (need_box and not r.get("l_in")) or need_customs:
             p = _fill_box_spec_from_sellfox(db, msku, p)
         upb = int(r.get("units_per_box") or (p.qty_per_box if p and p.qty_per_box else 0) or 0)
         l_in = r.get("l_in") or (round(p.carton_l_cm / CM_PER_IN, 2) if p and p.carton_l_cm else None)
