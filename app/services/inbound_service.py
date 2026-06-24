@@ -899,7 +899,10 @@ def fetch_labels(db, batch, kind="box", page_type=None, live=False):
         plan["dry_run"] = True
         return plan                       # 🛑 演练：到此为止，不碰亚马逊
     out_dir = os.path.join(OUTPUT_DIR, re.sub(r'[\\/:*?"<>|]', "_", batch.name or f"batch{batch.id}"), "labels")
-    os.makedirs(out_dir, exist_ok=True)
+    raw_dir = os.path.join(out_dir, "原始")      # 原始(亚马逊下载的整页)
+    cut_dir = os.path.join(out_dir, "裁剪")      # 裁剪好的(贴标用)
+    os.makedirs(raw_dir, exist_ok=True)
+    os.makedirs(cut_dir, exist_ok=True)
     saved = []
 
     def _url(resp):
@@ -926,14 +929,14 @@ def fetch_labels(db, batch, kind="box", page_type=None, live=False):
             url = _url(fba.call("GET", f"/shipments/{conf}/labels", params=params, store=store))
             if not url:
                 continue
-            raw = os.path.join(out_dir, f"{conf}_原始.pdf")
-            cut = os.path.join(out_dir, f"{conf}_单张.pdf")
+            raw = os.path.join(raw_dir, f"{conf}_原始.pdf")
+            cut = os.path.join(cut_dir, f"{conf}_裁剪.pdf")
             lt.download_pdf(url, raw)
             if str(page_type).startswith("PackageLabel_Thermal"):   # 热敏每箱一页 → 按内容裁白边
                 n = lt.crop_to_content(raw, cut)
             else:                                                    # 多合一页 → 网格切单张
                 n = lt.cut_by_page_type(raw, cut, page_type)
-            saved.append({"shipment": conf, "boxes": n_boxes, "cut_pdf": cut, "labels": n})
+            saved.append({"shipment": conf, "boxes": n_boxes, "raw_pdf": raw, "cut_pdf": cut, "labels": n})
     else:  # fnsku
         items = [{"msku": it.msku, "quantity": it.qty}
                  for sp in batch.shipments for it in sp.items if (it.qty or 0) > 0]
@@ -941,24 +944,27 @@ def fetch_labels(db, batch, kind="box", page_type=None, live=False):
                             json={"label_type": "STANDARD_FORMAT", "page_type": page_type,
                                   "msku_quantities": items}))
         if url:
-            raw = os.path.join(out_dir, "fnsku_原始.pdf")
-            cut = os.path.join(out_dir, "fnsku_单张.pdf")
+            raw = os.path.join(raw_dir, "fnsku_原始.pdf")
+            cut = os.path.join(cut_dir, "fnsku_裁剪.pdf")
             lt.download_pdf(url, raw)
             n = lt.cut_by_page_type(raw, cut, page_type)
-            saved.append({"cut_pdf": cut, "labels": n})
-    # 文件多 → 打包成一个 zip（各货件箱唛 + FNSKU + 清单）+ 合并一个 PDF 便于一次打印
+            saved.append({"raw_pdf": raw, "cut_pdf": cut, "labels": n})
+    # 原始、裁剪**分开打包**：裁剪给贴标用(合并PDF便于打印)，原始单独留档
     cut_files = [s["cut_pdf"] for s in saved if s.get("cut_pdf")]
-    zip_path = merged = None
+    raw_files = [s["raw_pdf"] for s in saved if s.get("raw_pdf")]
+    zip_cut = zip_raw = merged = None
     total = sum(s.get("labels") or 0 for s in saved)
     if cut_files:
         manifest = [f"{s.get('shipment', 'FNSKU')}  {s.get('labels')} 张  "
                     f"{os.path.basename(s.get('cut_pdf', ''))}" for s in saved]
         manifest.append(f"合计 {total} 张")
-        from ..modules import label_tools as lt
-        zip_path = lt.bundle_zip(cut_files, os.path.join(out_dir, f"{kind}_标签打包.zip"), manifest)
-        merged, _ = lt.merge_pdfs(cut_files, os.path.join(out_dir, f"{kind}_全部单张.pdf"))
+        zip_cut = lt.bundle_zip(cut_files, os.path.join(out_dir, f"{kind}_裁剪_打包.zip"), manifest)
+        merged, _ = lt.merge_pdfs(cut_files, os.path.join(out_dir, f"{kind}_裁剪_全部单张.pdf"))
+    if raw_files:
+        zip_raw = lt.bundle_zip(raw_files, os.path.join(out_dir, f"{kind}_原始_打包.zip"))
     plan.update({"dry_run": False, "saved": saved, "out_dir": out_dir,
-                 "zip": zip_path, "merged_pdf": merged, "total_labels": total})
+                 "raw_dir": raw_dir, "cut_dir": cut_dir,
+                 "zip": zip_cut, "zip_raw": zip_raw, "merged_pdf": merged, "total_labels": total})
     return plan
 
 

@@ -784,11 +784,33 @@ def _deliver_docs(db, chat_id, batch, gen, label):
     return zpath
 
 
+def _batch_opname(db, batch):
+    """按批次品牌找管该店铺的运营名（把生成/标签的成败记进其工作区）。"""
+    import json as _json
+    from ..feishu_models import Operator
+    if batch is None:
+        return "运营"
+    for o in db.query(Operator).all():
+        try:
+            sids = _json.loads(o.scope_brand_ids or "[]")
+        except (ValueError, TypeError):
+            sids = []
+        if o.is_admin or (batch.brand_id in sids):
+            return o.name or "运营"
+    return "运营"
+
+
 def _finish_generate(db, chat_id, batch, res, title):
-    """统一处理生成结果：校验拦截 / 成功打包发飞书。"""
+    """统一处理生成结果：校验拦截 / 成功打包发飞书。同时把成败记进该批次工作区。"""
+    pgn = getattr(batch, "purchase_plan_no", None)
+    opname = _batch_opname(db, batch)
+    shop = getattr(batch, "shop_name", "") or ""
     if res.get("blocked"):
         rep = res.get("report") or {}
         issues = rep.get("issues") or rep.get("errors") or []
+        if pgn:
+            workspace.log(opname, pgn, f"{title}：校验未通过未生成 — "
+                          + "；".join(str(x)[:60] for x in issues[:5]), level="error", shop=shop)
         body = ("⛔ **校验未通过，未生成**（校验是生成前置）：\n"
                 + ("\n".join(f"　- {str(x)[:80]}" for x in issues[:8]) if issues else "见数据体检"))
         card = cards.text_card("生成被拦截 · 先过校验", body, template="orange")
@@ -796,6 +818,18 @@ def _finish_generate(db, chat_id, batch, res, title):
     gen = res.get("generated") or []
     errs = res.get("errors") or []
     notes = res.get("notes") or []
+    if pgn:                                # 记工作区：产出文件 + 问题
+        from ..models import GeneratedDoc
+        for g in gen:
+            d = db.get(GeneratedDoc, g.get("doc_id")) if g.get("doc_id") else None
+            path = (d.path if d else None) or g.get("path")
+            if path:
+                workspace.add_file(opname, pgn, path)
+        workspace.log(opname, pgn, f"{title}：生成 {len(gen)} 份"
+                      + (f"，{len(errs)} 个问题" if errs else ""),
+                      level=("error" if errs and not gen else "info"), shop=shop)
+        for e in errs:
+            workspace.log(opname, pgn, f"{title}问题：{str(e)[:80]}", level="error", shop=shop)
     zpath = _deliver_docs(db, chat_id, batch, gen, title) if gen else None
     body = (f"✅ 已生成 **{len(gen)}** 个文件"
             + (f"，打包发群：`{os.path.basename(zpath)}`" if zpath else "") + "\n"
@@ -857,10 +891,15 @@ def _act_fetch_labels(db, chat_id, value):
         return {"card": card, "sent": _safe_send_card(chat_id, card), "action": "fetch_labels"}
     live = os.getenv("INBOUND_LIVE_SUBMIT") == "1"
     kname = "箱唛" if kind == "box" else "FNSKU 商品标签"
+    pgn = getattr(b, "purchase_plan_no", None)
+    opname = _batch_opname(db, b)
+    shop = getattr(b, "shop_name", "") or ""
     try:
         from ..services import inbound_service as ib
         plan = ib.fetch_labels(db, b, kind=kind, live=live)
     except Exception as e:
+        if pgn:
+            workspace.log(opname, pgn, f"{kname}下载失败：{str(e)[:100]}", level="error", shop=shop)
         card = cards.text_card("标签下载失败", str(e)[:300], template="red")
         return {"card": card, "sent": _safe_send_card(chat_id, card), "action": "fetch_labels"}
     if plan.get("dry_run"):
@@ -878,6 +917,11 @@ def _act_fetch_labels(db, chat_id, value):
                 + "\n".join(f"　{s.get('shipment', 'FNSKU')}：{s.get('labels')} 张"
                             for s in saved[:15]))
         card = cards.text_card("标签已下载（已剪切单张）", body, template="green")
+        if pgn:                            # 记工作区：标签产出
+            for k in ("zip", "merged_pdf", "zip_raw"):
+                if plan.get(k):
+                    workspace.add_file(opname, pgn, plan[k])
+            workspace.log(opname, pgn, f"{kname}：下载+裁剪 {total} 张", level="info", shop=shop)
     return {"card": card, "sent": _safe_send_card(chat_id, card),
             "action": "fetch_labels", "dry_run": plan.get("dry_run", True)}
 
@@ -892,12 +936,21 @@ def _act_choose_batch_forwarder(db, chat_id, value):
         card = cards.text_card("选定货代", "批次或方案缺失", template="red")
         return {"card": card, "sent": _safe_send_card(chat_id, card), "action": "choose_batch_forwarder"}
     live = os.getenv("INBOUND_LIVE_SUBMIT") == "1"
+    pgn = getattr(b, "purchase_plan_no", None)
+    opname = _batch_opname(db, b)
+    shop = getattr(b, "shop_name", "") or ""
     from ..services import inbound_service as ib
     try:
         plan = ib.confirm_placement_for_batch(db, b, oid, live=live)
     except Exception as e:
+        if pgn:
+            workspace.log(opname, pgn, f"选货代/提交分仓失败({fname})：{str(e)[:120]}",
+                          level="error", shop=shop)
         card = cards.text_card("选定失败", str(e)[:250], template="red")
         return {"card": card, "sent": _safe_send_card(chat_id, card), "action": "choose_batch_forwarder"}
+    if not plan.get("dry_run") and not plan.get("already_submitted") and pgn:
+        workspace.log(opname, pgn, f"已选货代 {fname} + 真实提交分仓({'、'.join(plan.get('fcs') or [])})",
+                      level="info", shop=shop)
     if plan.get("already_submitted"):       # 该批已提交过，防重复
         ships = plan.get("shipments") or []
         body = (f"ℹ️ **{b.name}** 已提交过亚马逊，无需重复。\n"
