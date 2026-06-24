@@ -614,8 +614,7 @@ def _act_view_placement(db, chat_id, batch_id):
 def _simple_inquiry_text(lanes):
     """简洁询价正文：开头"你好"、**只列仓号(箱/kg)、不带店铺名、不带暗号**。"""
     fcs = "、".join(f"{l['fc']}({l.get('boxes', 0)}箱/{l.get('weight_kg', 0)}kg)" for l in lanes)
-    return (f"你好，麻烦这几个仓报下头程价格：\n{fcs}\n"
-            f"（每个仓 单价/单位、时效、截关、月度报关费）")
+    return f"你好，麻烦这几个仓报下价格：\n{fcs}"
 
 
 def _inquiry_groups(db, summary, only_new=True):
