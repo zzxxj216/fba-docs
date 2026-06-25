@@ -161,7 +161,18 @@ def _fill_box_spec_from_sellfox(db, msku, p):
     p.name_customs_cn = p.name_customs_cn or (row.get("declareNameCh") or "")
     p.name_customs_en = p.name_customs_en or (row.get("declareNameEn") or "")
     p.hs_code = p.hs_code or (row.get("hsCode") or "")
-    p.material = p.material or (row.get("declareMaterial") or row.get("materialQuality") or "")
+    # 材质：赛狐多为英文(steel)→ 拆成 中文材质(material) + 英文材质(material_en)
+    raw_mat = row.get("declareMaterial") or row.get("materialQuality") or ""
+    if raw_mat and not (p.material or "").strip():
+        _cn = "".join(re.findall(r"[一-鿿]+", raw_mat))
+        _en = " ".join(re.findall(r"[A-Za-z]+", raw_mat)).strip()
+        _en2cn = {"steel": "铁", "iron": "铁", "stainless": "不锈钢", "plastic": "塑料",
+                  "aluminum": "铝", "aluminium": "铝", "zinc": "锌", "copper": "铜", "pp": "塑料"}
+        if not _cn and _en:
+            _cn = _en2cn.get(_en.lower().split()[0], "")
+        p.material = _cn or raw_mat
+        if _en and not (p.material_en or "").strip():
+            p.material_en = _en[:1].upper() + _en[1:]
     p.usage = p.usage or (row.get("declareUseTo") or row.get("useTo") or "")
     p.declare_elements = p.declare_elements or (row.get("declareElements") or "")
     p.unit_price_default = p.unit_price_default or _f(row.get("declareCharge"))
