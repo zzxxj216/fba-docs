@@ -390,7 +390,8 @@ def _auto_extract(db, msg):
     elif (msg.content or "").strip():
         # 逐条消息提取 + 按仓合并(_persist_quote)：货代分多条/补报时稳，不会覆盖已报
         quote = extract_quote_from_text(db, msg.inquiry_id, msg.forwarder_id, msg.content)
-    if quote is not None:
+    # 只有这条消息真提取到报价行才通知/推比价卡——闲聊"收到/OK/稍等"(0行)不触发，避免刷屏
+    if quote is not None and getattr(quote, "_extracted_lines", 0) > 0:
         try:
             _post_extract(db, msg.inquiry_id, msg.forwarder_id, quote)
         except Exception:
@@ -580,7 +581,11 @@ def extract_quote_from_text(db, inquiry_id, forwarder_id, text, use_llm_fallback
             pass
     if extracted is None:                 # 退正则兜底
         extracted = quote_extractor.extract(text, lanes=lanes)
-    return _persist_quote(db, inquiry_id, forwarder_id, extracted, raw_message=text)
+    quote = _persist_quote(db, inquiry_id, forwarder_id, extracted, raw_message=text)
+    # 本条消息实际提取到的报价行数（闲聊"收到/OK"为0）→ 上层据此决定是否通知/推比价卡
+    quote._extracted_lines = len([l for l in (extracted.get("lines") or [])
+                                  if l.get("price") is not None])
+    return quote
 
 
 def extract_quote_from_image(db, inquiry_id, forwarder_id, image_path):
@@ -588,8 +593,10 @@ def extract_quote_from_image(db, inquiry_id, forwarder_id, image_path):
     inq = db.get(Inquiry, inquiry_id)
     lanes = _jload(inq.lanes_snapshot, []) if inq else []
     extracted = quote_extractor_llm.extract_image(image_path, lanes=lanes)
-    return _persist_quote(db, inquiry_id, forwarder_id, extracted,
-                          raw_image_path=image_path)
+    quote = _persist_quote(db, inquiry_id, forwarder_id, extracted, raw_image_path=image_path)
+    quote._extracted_lines = len([l for l in (extracted.get("lines") or [])
+                                  if l.get("price") is not None])
+    return quote
 
 
 # ---------------------------------------------------------------- 报全校验 + 比价
