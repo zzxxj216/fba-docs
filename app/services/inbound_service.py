@@ -543,6 +543,24 @@ def build_for_batch(db, batch):
     if not raw:
         raise RuntimeError("批次无明细，无法建仓")
     items = _resolve_items(db, raw)              # 校验+补箱规（缺箱规会在这里报错）
+    # 报关申报单价 = 公式现算(成本×vat×加价÷汇率 + 重量分摊)，覆盖 import 时存的赛狐申报价。
+    # 此时箱规/成本已补全，能算准；人工改过的(edited_fields)不动。
+    from .. import rule_engine
+    for sp in batch.shipments:
+        for it in sp.items:
+            try:
+                ed = json.loads(it.edited_fields or "[]")
+            except (ValueError, TypeError):
+                ed = []
+            if "customs_unit_price" in ed:
+                continue
+            pp = db.query(Product).filter(Product.sku == it.msku).first()
+            if pp:
+                v = rule_engine.customs_price(pp.purchase_cost_default, pp.box_weight_kg,
+                                              pp.qty_per_box, db, batch.company_id)
+                if v is not None:
+                    it.customs_unit_price = v
+    db.flush()
     store = _store(db, batch.brand_id) or None
     spec = {it["msku"]: it for it in items}
 
