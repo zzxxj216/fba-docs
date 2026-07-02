@@ -618,11 +618,8 @@ def build_for_batch(db, batch):
             break
         except RuntimeError as e:
             last_err = str(e)
-            if pid_try:                       # 取消刚建但校验失败的草稿计划
-                try:
-                    fba.call("PUT", f"/inbound-plans/{pid_try}/cancel", store=store, timeout=60)
-                except Exception:
-                    pass
+            if pid_try:                       # 红线：Claude 不做任何取消——留下的草稿计划报告给用户手动清
+                print(f"[建仓] 校验失败留下草稿计划 {pid_try}（不自动取消，请手动清理）", flush=True)
             # 注意：错误来自 JSON，含引号的 SKU 会被转义成 6\"，需去掉反斜杠再匹配 api_items
             _clean = lambda xs: {s.replace("\\", "") for s in xs}
             none_label = _clean(re.findall(r"ERROR:\s*(\S+)\s+does not require labelOwner", last_err))
