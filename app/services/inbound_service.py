@@ -526,6 +526,12 @@ def _default_expiration():
     return (date.today() + timedelta(days=365)).isoformat()
 
 
+# packing-information 报错里的期望 Item 规格(据此纠正 labelOwner/prepOwner/expiration)
+_EXPECTED_ITEM_RE = re.compile(
+    r"Invalid item details for (\S+?), expected: Item\(msku=[^,]+, mlc=[^,]*, "
+    r"expiration=([^,]*), labelOwner=(\w+), prepOwner=(\w+)")
+
+
 def _build_package_groupings(pid, po, items, sku_boxes_fn, store):
     """按装箱组归属把每个 SKU 的箱子分到对应 packing group。单组=原行为；
     组接口查不到归属的 SKU 兜底放第一组。"""
@@ -689,10 +695,33 @@ def build_for_batch(db, batch):
 
     # Amazon 可能把商品拆成多个装箱组(packing group，如大小件混装)——packing-information
     # 必须给**每个组**提交它自己那些 SKU 的箱子，只发第一组会被拒(Expected all of [pg..,pg..])。
-    package_groupings = _build_package_groupings(pid, po, items, _sku_boxes, store)
-    r = fba.call("POST", f"/inbound-plans/{pid}/packing-information", store=store,
-                 json={"package_groupings": package_groupings})
-    fba.wait_operation(r["operationId"], store=store)
+    # 另有隐性要求：部分 SKU 的 prepOwner 实际须为 NONE(create 不报错、packing 才报
+    # "expected: Item(...prepOwner=NONE...)")——按报错 expected 自动纠正 owner_map 重试。
+    corrected = set()
+    for _rnd in range(20):
+        package_groupings = _build_package_groupings(pid, po, items, _sku_boxes, store)
+        try:
+            r = fba.call("POST", f"/inbound-plans/{pid}/packing-information", store=store,
+                         json={"package_groupings": package_groupings})
+            fba.wait_operation(r["operationId"], store=store)
+            break
+        except RuntimeError as e:
+            m = _EXPECTED_ITEM_RE.search(str(e))
+            if not m:
+                raise
+            sku = m.group(1).replace("\\", "")
+            exp_expr, exp_label, exp_prep = m.group(2).strip(), m.group(3), m.group(4)
+            fix = {"labelOwner": exp_label, "prepOwner": exp_prep}
+            if exp_expr and exp_expr != "null":
+                fix["expiration"] = exp_expr
+            if not corrected:               # 首错：多为同规则，先应用到全部未纠正 SKU 加速收敛
+                for it in items:
+                    if it["msku"] != sku:
+                        owner_map[it["msku"]] = dict(fix)
+            owner_map[sku] = fix
+            corrected.add(sku)
+    else:
+        raise RuntimeError("装箱明细多轮 owner 纠正后仍未通过，请查看最近报错")
 
     g2 = fba.call("POST", f"/inbound-plans/{pid}/placement-options/generate", store=store)
     fba.wait_operation(g2["operationId"], store=store, timeout=300)
