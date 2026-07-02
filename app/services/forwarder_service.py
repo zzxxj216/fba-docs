@@ -39,12 +39,25 @@ def channel_status():
 
 
 def _match_forwarder(db, sender_id, room_id):
-    """按企微来源匹配货代：优先群 room_id，其次外部联系人 id。匹配不到返回 None。"""
+    """按企微来源匹配货代：优先群 room_id，其次外部联系人 id。匹配不到返回 None。
+
+    同一群可能绑多条货代记录（多品牌共用一个货代群，如朗格群绑 Zentop/Byane/RazEdg）——
+    优先取**有进行中询价(收集中)**的那条，否则取第一条，避免消息归到没询价的兄弟记录上。
+    """
     q = db.query(Forwarder)
     if room_id:
-        f = q.filter(Forwarder.qiwe_room_id == str(room_id)).first()
-        if f:
-            return f
+        rows = q.filter(Forwarder.qiwe_room_id == str(room_id)).all()
+        if rows:
+            if len(rows) > 1:
+                from ..models import Inquiry
+                for f in rows:
+                    open_inq = (db.query(Inquiry)
+                                .filter(Inquiry.status == "收集中",
+                                        Inquiry.target_forwarder_ids.like(f"%{f.id}%"))
+                                .order_by(Inquiry.id.desc()).first())
+                    if open_inq and f.id in json.loads(open_inq.target_forwarder_ids or "[]"):
+                        return f
+            return rows[0]
     if sender_id:
         return q.filter(Forwarder.qiwe_external_userid == str(sender_id)).first()
     return None
