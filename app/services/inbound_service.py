@@ -22,38 +22,24 @@ from ..models import Brand, InboundPlan, Product
 CM_PER_IN = 2.54
 LB_PER_KG = 2.20462
 
-# 发货地址（mcapi FbaSourceAddress 用 snake_case）。**按店铺(amazon_store)配置**——
-# 不同店铺货物从不同地点发，建仓 sourceAddress 必须用对应店铺自己的发货地。
-SOURCE_ADDRESS_BY_STORE = {
-    "qifengz": {        # HUHOLE
-        "name": "Xiao Wu",
-        "company_name": "hangzhou muyufang kejiyouxiangongsi",
-        "address_line1": "xinwankejichuangxinyuan 1-417shi",
-        "city": "Hangzhou", "state_or_province_code": "Zhejiang",
-        "country_code": "CN", "postal_code": "310000", "phone_number": "17767158681",
-    },
-    "serenorch": {      # Serenorch（玫玑研·上海主体）
-        "name": "HongJun Sun",
-        "company_name": "Mei Ji Yan Ri Yong Pin (Shanghai) Co., Ltd.",
-        "address_line1": "suidelu 2nong 20hao 5ceng A503shi, putuoqu",
-        "city": "Shanghai", "state_or_province_code": "Shanghai",
-        "country_code": "CN", "postal_code": "200060", "phone_number": "19116409320",
-    },
-    "bfpeaky": {        # BFPeaky（周峰科技·杭州）
-        "name": "Qifeng Zhou",
-        "company_name": "hangzhouzhoufengkejiyouxiangongsi",
-        "address_line1": "Xinwanjiedao, xinwankejichuangxinyuan2-206-2shi",
-        "city": "Hangzhou", "state_or_province_code": "Zhejiang",
-        "country_code": "CN", "postal_code": "311228", "phone_number": "17706538390",
-    },
-}
-# 默认发货地址（未配置店铺时兜底）
-SOURCE_ADDRESS = SOURCE_ADDRESS_BY_STORE["qifengz"]
+# 发货地址：存店铺档案 Brand.source_address(JSON, mcapi FbaSourceAddress snake_case)。
+# **店铺独有信息，严禁共用/回退**——曾因回退默认地址导致 Byane 建仓用了 HUHOLE 的发货地
+# (店铺串联风险)。缺失 = 建仓直接报错，绝不悄悄用别家的。
 
 
-def _source_address(store):
-    """按店铺(amazon_store)取发货地址；未配置则用默认。"""
-    return SOURCE_ADDRESS_BY_STORE.get((store or "").strip()) or SOURCE_ADDRESS
+def _source_address(db, brand_id):
+    """按品牌取该店铺自己的发货地址(店铺档案)。缺失=报错，不回退。"""
+    b = db.get(Brand, brand_id) if brand_id else None
+    addr = None
+    try:
+        addr = json.loads(b.source_address) if (b and b.source_address) else None
+    except (ValueError, TypeError):
+        addr = None
+    if not addr or not (addr.get("address_line1") or "").strip():
+        raise RuntimeError(
+            f"品牌「{b.name if b else brand_id}」未配置发货地址（店铺档案）——"
+            "为防店铺串联不允许回退默认地址，请先补全该店铺发货地址再建仓")
+    return addr
 
 ST_CREATED = "计划已创建"
 ST_PACKED = "装箱已确认"
@@ -340,7 +326,7 @@ def create_plan(db, brand_id, raw_items, source_type="manual", source_ref="", na
         if it["expiration"]:
             d["expiration"] = it["expiration"]
         api_items.append(d)
-    src = _source_address(store)
+    src = _source_address(db, brand_id)
     resp = fba.call("POST", "/inbound-plans", store=store, timeout=90,
                     json={"name": name or None, "source_address": src, "items": api_items})
     plan_id = resp.get("inboundPlanId", "")
@@ -601,9 +587,11 @@ def build_for_batch(db, batch):
     api_items = [{"msku": it["msku"], "quantity": it["quantity"],
                   "prep_owner": "SELLER", "label_owner": "SELLER"} for it in items]
 
+    src_addr = _source_address(db, batch.brand_id)   # 缺发货地址在建 plan 前就报错
+
     def _create():
         return fba.call("POST", "/inbound-plans", store=store, timeout=90,
-                        json={"name": batch.name, "source_address": _source_address(store), "items": api_items})
+                        json={"name": batch.name, "source_address": src_addr, "items": api_items})
 
     # 部分 SKU（无标/Amazon贴标）只接受 labelOwner/prepOwner=NONE：亚马逊逐条报
     # "ERROR: <MSKU> does not require labelOwner ... Accepted values: [NONE]"。

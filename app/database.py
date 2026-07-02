@@ -50,6 +50,7 @@ def _ensure_columns():
     specs = [
         ("templates", "company_id", "INT NULL"),
         ("templates", "brand_id", "INT NULL"),
+        ("brands", "source_address", "TEXT NULL"),
     ]
     try:
         with engine.connect() as conn:

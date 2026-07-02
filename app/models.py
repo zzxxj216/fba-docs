@@ -74,6 +74,9 @@ class Brand(Base):
     amazon_store = Column(String(32), default="")           # mcapi AMAZON_STORES_JSON 的 store key（空=默认店 main）
     # 固定模板集（JSON int 数组）：配了则该品牌批次默认勾选/生成直接用这套，不再走货代+internal启发式。
     default_template_ids = Column(Text)
+    # 发货地址(JSON，mcapi FbaSourceAddress snake_case)。**店铺独有，严禁共用/回退**——
+    # 曾因回退默认地址导致 Byane 建仓用了 HUHOLE 的发货地(店铺串联风险)。缺=建仓直接报错。
+    source_address = Column(Text)
     remark = Column(Text)
     active = Column(Boolean, default=True)
 
