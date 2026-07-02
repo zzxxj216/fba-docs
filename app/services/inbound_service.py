@@ -526,6 +526,34 @@ def _default_expiration():
     return (date.today() + timedelta(days=365)).isoformat()
 
 
+def _build_package_groupings(pid, po, items, sku_boxes_fn, store):
+    """按装箱组归属把每个 SKU 的箱子分到对应 packing group。单组=原行为；
+    组接口查不到归属的 SKU 兜底放第一组。"""
+    groups = po.get("packingGroups") or [None]
+    group_skus = {}
+    for gid in groups:
+        if not gid:
+            continue
+        gitems = fba.call("GET", f"/inbound-plans/{pid}/packing-groups/{gid}/items",
+                          store=store) or {}
+        group_skus[gid] = {(x.get("msku") or "").strip()
+                           for x in (gitems.get("items") or [])}
+    package_groupings, assigned = [], set()
+    for gid in groups:
+        gboxes = []
+        for it in items:
+            if len(groups) == 1 or it["msku"] in group_skus.get(gid, set()):
+                gboxes.extend(sku_boxes_fn(it))
+                assigned.add(it["msku"])
+        if gboxes:
+            package_groupings.append({"packingGroupId": gid, "boxes": gboxes})
+    leftover = [it for it in items if it["msku"] not in assigned]
+    if leftover and package_groupings:
+        for it in leftover:
+            package_groupings[0]["boxes"].extend(sku_boxes_fn(it))
+    return package_groupings
+
+
 def build_for_batch(db, batch):
     """直接给批次建仓（不走向导）：用批次明细跑 create→packing→boxes→placement，
     把分仓方案(含合仓)算好箱数/重量存到 batch.placement_options，并回填 inbound_plan_id。
@@ -646,22 +674,27 @@ def build_for_batch(db, batch):
             d["expiration"] = ai["expiration"]
         owner_map[ai["msku"]] = d
 
-    boxes = []
-    for it in items:
+    def _sku_boxes(it):
         upb = it["units_per_box"]
         full, rem = divmod(it["quantity"], upb)
         dims = {"unitOfMeasurement": "IN", "length": it["l_in"], "width": it["w_in"], "height": it["h_in"]}
         wt = {"unit": "LB", "value": it["weight_lb"]}
         line = {"msku": it["msku"],
                 **owner_map.get(it["msku"], {"prepOwner": "SELLER", "labelOwner": "SELLER"})}
+        out = []
         if full > 0:
-            boxes.append({"contentInformationSource": "BOX_CONTENT_PROVIDED",
-                          "items": [dict(line, quantity=upb)], "dimensions": dims, "weight": wt, "quantity": full})
+            out.append({"contentInformationSource": "BOX_CONTENT_PROVIDED",
+                        "items": [dict(line, quantity=upb)], "dimensions": dims, "weight": wt, "quantity": full})
         if rem > 0:
-            boxes.append({"contentInformationSource": "BOX_CONTENT_PROVIDED",
-                          "items": [dict(line, quantity=rem)], "dimensions": dims, "weight": wt, "quantity": 1})
+            out.append({"contentInformationSource": "BOX_CONTENT_PROVIDED",
+                        "items": [dict(line, quantity=rem)], "dimensions": dims, "weight": wt, "quantity": 1})
+        return out
+
+    # Amazon 可能把商品拆成多个装箱组(packing group，如大小件混装)——packing-information
+    # 必须给**每个组**提交它自己那些 SKU 的箱子，只发第一组会被拒(Expected all of [pg..,pg..])。
+    package_groupings = _build_package_groupings(pid, po, items, _sku_boxes, store)
     r = fba.call("POST", f"/inbound-plans/{pid}/packing-information", store=store,
-                 json={"package_groupings": [{"packingGroupId": (po.get("packingGroups") or [None])[0], "boxes": boxes}]})
+                 json={"package_groupings": package_groupings})
     fba.wait_operation(r["operationId"], store=store)
 
     g2 = fba.call("POST", f"/inbound-plans/{pid}/placement-options/generate", store=store)
