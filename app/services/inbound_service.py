@@ -109,16 +109,25 @@ def _fill_box_spec_from_sellfox(db, msku, p):
         except (TypeError, ValueError):
             return None
 
-    # msku(Amazon)和赛狐商品库 sku 常有差异：尾部引号(6")、站点后缀(-US/-UK…)。
-    # 依次尝试：原值、去站点后缀、去尾部引号、两者都去。
+    # msku(Amazon)和赛狐商品库 sku 常有差异：尾部引号(6")、站点后缀(-US/-UK…)、
+    # 尾部数字批次码(Zentop 的 -016/-005)、-New 后缀。依次尝试各种去后缀变体。
     import re
     bases = [msku]
     m = re.match(r"^(.*)-(US|UK|CA|DE|FR|IT|ES|JP|AU|MX|NL|SE|PL|BE|TR|SG|AE|SA|BR|IN)$",
                  msku, re.I)
     if m:
         bases.append(m.group(1))
-    variants, seen = [], set()
+    more = []
     for b in bases:
+        more.append(b)
+        b2 = re.sub(r"-New$", "", b, flags=re.I)
+        if b2 != b:
+            more.append(b2)
+        b3 = re.sub(r"-\d{1,3}$", "", b2)      # 去尾部数字码(Zentop: B1S-66DL-016 → B1S-66DL)
+        if b3 != b2:
+            more.append(b3)
+    variants, seen = [], set()
+    for b in more:
         for v in (b, b.rstrip('"”″\' ').strip()):
             if v and v not in seen:
                 seen.add(v)
