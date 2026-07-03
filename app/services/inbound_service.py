@@ -163,8 +163,12 @@ def _fill_box_spec_from_sellfox(db, msku, p):
         _en = " ".join(re.findall(r"[A-Za-z]+", raw_mat)).strip()
         _en2cn = {"steel": "铁", "iron": "铁", "stainless": "不锈钢", "plastic": "塑料",
                   "aluminum": "铝", "aluminium": "铝", "zinc": "锌", "copper": "铜", "pp": "塑料"}
+        _cn2en = {"铁": "Steel", "钢": "Steel", "不锈钢": "Stainless Steel", "塑料": "Plastic",
+                  "铝": "Aluminum", "锌": "Zinc", "铜": "Copper"}
         if not _cn and _en:
             _cn = _en2cn.get(_en.lower().split()[0], "")
+        if not _en and _cn:                    # 赛狐只给中文(钢)时反查英文——两栏必须都有
+            _en = _cn2en.get(_cn, "")
         p.material = _cn or raw_mat
         if _en and not (p.material_en or "").strip():
             p.material_en = _en[:1].upper() + _en[1:]
