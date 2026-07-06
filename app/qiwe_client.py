@@ -127,3 +127,16 @@ def list_rooms(guid=None):
         raise RuntimeError("缺少实例 guid（配 QIWE_GUID 或显式传入）")
     r = call("/room/getRoomList", {"guid": guid}) or {}
     return r.get("roomList", [])
+
+
+def batch_room_detail(room_ids, guid=None):
+    """按 roomId 批量查群详情（roomName/成员等）。
+
+    注意：getRoomList 只返回自建群，加入的外部群查不到——用这个接口按 id 查
+    （2026-07-06 实测，绑定纠错就靠它拿到真实群名）。
+    """
+    guid = guid or default_guid()
+    if not guid:
+        raise RuntimeError("缺少实例 guid（配 QIWE_GUID 或显式传入）")
+    r = call("/room/batchGetRoomDetail", {"guid": guid, "roomIdList": list(room_ids)}) or {}
+    return r.get("roomList", []) if isinstance(r, dict) else r
