@@ -83,6 +83,7 @@ FIELD_DICT = {
         "carton_lwh_in": "箱规长×宽×高乘积(in)",
         "box_weight_kg": "单箱重量(kg)",
         "total_gross_weight": "总毛重(单箱重×箱数)",
+        "total_net_weight": "总净重((单箱重−0.5)×箱数)",
         "declare_full": "申报要素串(用途|材质|品牌|规格)",
         "customs_unit_price": "申报单价",
         "purchase_cost": "采购成本",
@@ -158,6 +159,13 @@ FIELD_DICT = {
         "insurance_price": "保价单价",
         "insurance_amount": "保价金额",
         "contract_date_cn": "合同日期(中文)",
+        # 申报主体(export_via_trade 时=外贸主体星盟，否则=店铺主体)——报关资料用
+        "declare_name_cn": "申报主体中文名",
+        "declare_name_en": "申报主体英文名",
+        "declare_uscc": "申报主体信用代码",
+        "declare_address_en": "申报主体英文地址",
+        "declare_phone": "申报主体电话",
+        "overseas_consignee": "境外收货人(RuleConfig,可按主体覆盖)",
         # 报关/投保常量（RuleConfig 可改）
         "origin_country": "原产国",
         "dest_country": "运抵国",
@@ -305,6 +313,11 @@ def _item_row(it, seq, db, company):
         "box_weight_kg": p.box_weight_kg if p else None,
         "total_gross_weight": (
             _round(p.box_weight_kg * it.box_count, 2)
+            if p is not None and p.box_weight_kg is not None
+            and it.box_count is not None else None),
+        "total_net_weight": (
+            rule_engine.net_weight(_round(p.box_weight_kg * it.box_count, 2),
+                                   it.box_count, db=db, company_id=cid)
             if p is not None and p.box_weight_kg is not None
             and it.box_count is not None else None),
         "declare_full": _declare_full(p),
@@ -462,7 +475,7 @@ def _const_calc(db, cid):
     keys = ("origin_country", "dest_country", "unit_name", "currency_customs",
             "package_type", "supervision_mode", "tax_mode", "transport_mode",
             "delivery_mode", "dest_type", "shelf_guarantee", "departure_port",
-            "fragile", "insurance_currency", "insurance_ratio")
+            "fragile", "insurance_currency", "insurance_ratio", "overseas_consignee")
     return {k: rule_engine.get_rule(db, k, cid) for k in keys}
 
 
@@ -479,6 +492,18 @@ def _shipment_calc(db, batch, sp, item_rows, company):
                                           base_date=batch.base_date),
         "contract_date_cn": _cn_date(batch.contract_date),
     }
+    # 申报主体(报关单境内发货人/生产销售单位、报关合同卖方)：
+    # export_via_trade(朗格系) → 外贸主体(星盟)；否则店铺主体自己。见 docs/doc_rules/报关资料.md
+    declarer = company
+    if company is not None and getattr(company, "export_via_trade", False) and db is not None:
+        declarer = (db.query(Company)
+                    .filter(Company.type == "trade", Company.active == True)  # noqa: E712
+                    .first()) or company
+    calc["declare_name_cn"] = (declarer.name_cn or "") if declarer else ""
+    calc["declare_name_en"] = (declarer.name_en or "") if declarer else ""
+    calc["declare_uscc"] = (declarer.uscc or "") if declarer else ""
+    calc["declare_address_en"] = (declarer.address_en or "") if declarer else ""
+    calc["declare_phone"] = (declarer.phone or "") if declarer else ""
     calc.update(_const_calc(db, cid))
     # 行级 calc 的批次/货件级兜底：取第一明细行；保价金额取合计
     if item_rows:
@@ -660,6 +685,11 @@ def resolve(path, ctx, row=None):
     ns = parts[0]
     if row is not None and isinstance(row, dict) and ns in row:
         obj = row[ns]
+        # 行级命名空间没有该键、但 ctx 同名空间有 → 落回 ctx
+        # （如表格列引用 calc.unit_name 等货件级常量，行级 calc 只有单价/金额类字段）
+        if (len(parts) > 1 and isinstance(obj, dict) and parts[1] not in obj
+                and ns in ctx and isinstance(ctx[ns], dict) and parts[1] in ctx[ns]):
+            obj = ctx[ns]
     elif ns in ctx:
         obj = ctx[ns]
     else:

@@ -39,6 +39,9 @@ DEFAULT_RULES = {
     "fragile": ("无易碎品", "易碎品"),
     "insurance_currency": ("人民币", "保险币种"),
     "insurance_ratio": ("100%", "投保比例"),
+    # 报关资料境外收货人：默认 BYANE CO., LIMITED；Serenorch(主体7玫玑研)按
+    # company:7 覆盖为 AMAZON.COM SERVICES, INC.（见 docs/doc_rules/报关资料.md）
+    "overseas_consignee": ("BYANE CO., LIMITED", "境外收货人"),
 }
 
 

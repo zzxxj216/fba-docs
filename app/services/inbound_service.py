@@ -580,6 +580,13 @@ def build_for_batch(db, batch):
            for sp in batch.shipments for it in sp.items if (it.qty or 0) > 0]
     if not raw:
         raise RuntimeError("批次无明细，无法建仓")
+    # 基准周五/合同日期(上月同日)在建仓时定死——缺了会导致报关编号缺日期段(批次44/45踩过)
+    from .. import rule_engine as _re
+    if not (batch.base_date or "").strip():
+        batch.base_date = _re.next_friday().strftime("%Y-%m-%d")
+    if not (batch.contract_date or "").strip():
+        batch.contract_date = _re.prev_month_same_day(
+            _re._to_date(batch.base_date)).strftime("%Y-%m-%d")
     items = _resolve_items(db, raw)              # 校验+补箱规（缺箱规会在这里报错）
     # 报关申报单价 = 公式现算(成本×vat×加价÷汇率 + 重量分摊)，覆盖 import 时存的赛狐申报价。
     # 此时箱规/成本已补全，能算准；人工改过的(edited_fields)不动。

@@ -30,9 +30,13 @@ def _get_sheet(wb, spec):
     name = (spec.get("name") or "").strip()
     if not name:
         return wb[wb.sheetnames[0]]
-    if name not in wb.sheetnames:
-        raise ValueError(f"模板中不存在工作表 '{name}'（现有：{', '.join(wb.sheetnames)}）")
-    return wb[name]
+    if name in wb.sheetnames:
+        return wb[name]
+    # 容错：模板 sheet 名带首尾空格（如「合同 」「用途功能 」）时按去空格后唯一匹配
+    hits = [s for s in wb.sheetnames if s.strip() == name]
+    if len(hits) == 1:
+        return wb[hits[0]]
+    raise ValueError(f"模板中不存在工作表 '{name}'（现有：{', '.join(wb.sheetnames)}）")
 
 
 def _resolve(path, ctx, row, where):
