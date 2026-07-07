@@ -115,10 +115,6 @@ def _fill_contract(dst, seller, buyer, no, contract_date, deliver_date, place, r
     ws = wb.active
     n = len(rows)
     shift = max(0, n - BASE_CAPACITY)
-    # 备用空行(26/27)的整行合并先拆掉(它们会变成明细行)
-    for m in [m for m in list(ws.merged_cells.ranges)
-              if m.min_row >= DETAIL_START and m.max_row < BASE_TOTAL_ROW]:
-        ws.unmerge_cells(str(m))
     if shift:
         # openpyxl 的 insert_rows 只移动单元格值、**不移动合并区**——须手动:
         # 拆掉插入点以下全部合并 → 插行 → 按位移重新合并
@@ -142,10 +138,13 @@ def _fill_contract(dst, seller, buyer, no, contract_date, deliver_date, place, r
     for r in range(DETAIL_START, total_row):
         for col in (1, 3, 4, 5, 6, 7):
             ws.cell(r, col).value = None
+    merged = {str(m) for m in ws.merged_cells.ranges}
     for i, it in enumerate(rows):
         r = DETAIL_START + i
         if r > DETAIL_START:
             _copy_row_style(ws, DETAIL_START, r, MAX_COL)
+        if f"A{r}:B{r}" not in merged:      # 品名列 A:B 逐行合并(模板样式;插入的新行要补)
+            ws.merge_cells(f"A{r}:B{r}")
         ws.cell(r, 1, it["name"])                       # A 品名=赛狐商品全名
         ws.cell(r, 3, it["qty"])                        # C 数量(整批聚合)
         ws.cell(r, 4, "盒")                             # D 单位
@@ -172,7 +171,8 @@ def generate_two_level(db, batch_id, persist=True):
     brand = db.get(Brand, batch.brand_id) if batch.brand_id else None
     if brand is None:
         raise RuntimeError("批次无品牌，无法定合同链")
-    base = batch.base_date or rule_engine.next_friday()     # 基准周五(缺则现算，同 generate_service 口径)
+    base = (rule_engine._to_date(batch.base_date) if (batch.base_date or "").strip()
+            else rule_engine.next_friday())                 # 基准周五(缺则现算，同 generate_service 口径)
     contract_date = rule_engine.prev_month_same_day(base)   # 合同日期=上月同日
     rows, missing = _aggregate_items(db, batch)
     if not rows:
