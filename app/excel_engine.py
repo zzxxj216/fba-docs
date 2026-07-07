@@ -331,19 +331,20 @@ def _fill_table(wb, ws, table, ctx, rows_source):
         _adjust_formulas_insert(wb, ws.title, ins_at, n_extra)
         _replicate_block(ws, start_row, row_step, len(rows))
 
-    # reserved_rows：模板预留 N 条记录的格式行；记录少于 N 时删掉多余预留行
-    # 并调整公式（删行在写入前做，写入坐标按删后布局计算）。
+    # reserved_rows：模板预留 N 条记录的格式行；删行在写入前做，写入坐标按删后布局算。
     reserved = int(table.get("reserved_rows") or 0)
-    if reserved and len(rows) < reserved:
-        del_start = start_row + len(rows) * row_step
-        n_del = (reserved - len(rows)) * row_step
-        _delete_rows_keep_merges(ws, del_start, n_del)
-        _adjust_formulas(wb, ws.title, del_start, n_del)
-    elif insert and reserved > 1 and len(rows) >= reserved:
-        # 插行只复制首块，模板第 2..N 个预留行会残留为空行（夹在明细与合计之间）。
-        # 删掉这 (reserved-1) 个空预留行并调整合计 SUM 范围（采购合同总值前的无用空行）。
+    if insert and reserved > 1:
+        # 插行模板：首块后插了 (n-1) 块，模板第 2..N 个预留块整体下移成了空行段
+        # （夹在明细与合计之间）——全部删掉，让合计/表尾紧跟明细（与 RPA 成品一致；
+        # 报关箱单曾因此出现 12 行空档、合计被顶到 32 行）。
         del_start = start_row + len(rows) * row_step
         n_del = (reserved - 1) * row_step
+        _delete_rows_keep_merges(ws, del_start, n_del)
+        _adjust_formulas(wb, ws.title, del_start, n_del)
+    elif reserved and len(rows) < reserved:
+        # 非插行模板：记录少于预留时删掉多余预留行并调整公式
+        del_start = start_row + len(rows) * row_step
+        n_del = (reserved - len(rows)) * row_step
         _delete_rows_keep_merges(ws, del_start, n_del)
         _adjust_formulas(wb, ws.title, del_start, n_del)
 
