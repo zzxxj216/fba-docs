@@ -1039,9 +1039,20 @@ def fetch_labels(db, batch, kind="box", page_type=None, live=False):
                 conf = det.get("shipmentConfirmationId")
             if not conf:
                 continue
-            boxes = fba.call("GET", f"/inbound-plans/{pid}/shipments/{sid}/boxes",
-                             store=store) or {}
-            n_boxes = len(boxes.get("boxes") or []) or None
+            # 逐箱列表要翻页：接口默认一页 20，>20 箱的货件会被截断
+            # (RazEdg SCK8 28箱只下了20张箱贴的事故,2026-07-07)
+            n_boxes, token = 0, None
+            while True:
+                bp = {"page_size": 30}
+                if token:
+                    bp["pagination_token"] = token
+                boxes = fba.call("GET", f"/inbound-plans/{pid}/shipments/{sid}/boxes",
+                                 params=bp, store=store) or {}
+                n_boxes += len(boxes.get("boxes") or [])
+                token = (boxes.get("pagination") or {}).get("nextToken")
+                if not token:
+                    break
+            n_boxes = n_boxes or None
             params = {"page_type": page_type, "label_type": "BARCODE_2D"}
             if n_boxes:                    # 非合作承运(自送)货件 page_size 必填(传箱数)
                 params["page_size"] = n_boxes
