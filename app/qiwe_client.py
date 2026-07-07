@@ -129,6 +129,19 @@ def list_rooms(guid=None):
     return r.get("roomList", [])
 
 
+def sync_msgs(guid=None, msg_seq=0, limit=100):
+    """同步历史消息一页（/msg/syncMsg）。返回 (syncMsgList, travelSyncKey, hasMore)。
+
+    webhook 掉线(404/断隧道)丢消息时用它补捞——2026-07-07 靠它找回丢失的货代报价。
+    从 msg_seq=0 起翻页，下页游标用返回的 travelSyncKey。
+    """
+    guid = guid or default_guid()
+    if not guid:
+        raise RuntimeError("缺少实例 guid（配 QIWE_GUID 或显式传入）")
+    r = call("/msg/syncMsg", {"guid": guid, "msgSeq": msg_seq, "limit": limit}) or {}
+    return (r.get("syncMsgList") or [], r.get("travelSyncKey"), bool(r.get("hasMore")))
+
+
 def batch_room_detail(room_ids, guid=None):
     """按 roomId 批量查群详情（roomName/成员等）。
 
