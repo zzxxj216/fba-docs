@@ -93,7 +93,8 @@ def _draft_content(inquiry, lanes, batch, forwarders):
     total_boxes = sum((l.get("boxes") or 0) for l in lanes)
     fcs = [l["fc"] for l in lanes]
     country = (batch.country or "US") if batch else "US"
-    summary = (f"【询价 {inquiry.ref_code}｜{country} {len(fcs)}仓/{total_boxes}箱】")
+    # 2026-07-07 用户拍板：发给货代的正文不带暗号/编号（ref_code 只留系统内部归属用）
+    summary = (f"【询价｜{country} {len(fcs)}仓/{total_boxes}箱】")
     lanes_text = "\n".join(
         f"  {l['fc']}：{l.get('boxes') or '?'}箱 / {l.get('volume_cbm') or '?'}方 / "
         f"{l.get('weight_kg') or '?'}kg"
@@ -102,8 +103,7 @@ def _draft_content(inquiry, lanes, batch, forwarders):
         f"{summary}\n您好，有一批 FBA 头程货需要询价，目的仓及货量如下：\n"
         f"{lanes_text}\n"
         "请按每个目的仓分别报：运费单价(币种/单位)、渠道、时效、截关、起送费，"
-        "另请告知月度报关费。多谢！\n"
-        f"（回复请带暗号 {inquiry.ref_code} 便于我方对单）")
+        "另请告知月度报关费。多谢！")
 
     if not llm_client.available():
         return fallback
@@ -111,8 +111,8 @@ def _draft_content(inquiry, lanes, batch, forwarders):
         prompt = (
             "你是外贸跟单，给货代起草一条 FBA 头程整包询价微信消息。要求：礼貌专业、简洁，"
             "逐目的仓列出货量，明确请对方逐仓报价（运费单价/币种/单位/渠道/时效/截关/起送费）"
-            "并问月度报关费。务必在开头保留这个暗号标题原样：\n" + summary +
-            "\n并在结尾提示回复带上暗号 " + inquiry.ref_code + "。\n\n"
+            "并问月度报关费。务必在开头保留这个标题原样：\n" + summary +
+            "\n正文里不要出现任何内部编号/暗号。\n\n"
             "目的仓与货量：\n" + lanes_text +
             "\n\n安全红线：只询价，绝不承诺货量/价格/下单/合作，不要替我方做任何确认。只输出消息正文。")
         text = llm_client.chat(
@@ -120,10 +120,8 @@ def _draft_content(inquiry, lanes, batch, forwarders):
              {"role": "user", "content": prompt}],
             max_tokens=600, temperature=0.3)
         text = (text or "").strip()
-        if text and inquiry.ref_code in text:
-            return text
         if text:
-            return f"{summary}\n{text}\n（回复请带暗号 {inquiry.ref_code}）"
+            return text if summary in text else f"{summary}\n{text}"
     except llm_client.LLMUnavailable:
         pass
     return fallback
