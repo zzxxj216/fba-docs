@@ -172,6 +172,11 @@ def _fill_box_spec_from_sellfox(db, msku, p):
         p.material = _cn or raw_mat
         if _en and not (p.material_en or "").strip():
             p.material_en = _en[:1].upper() + _en[1:]
+    # 兜底：已有中文材质但缺英文(或反之)时按词典互转——托书 G/H 两栏必须都有
+    _cn2en_std = {"铁": "Steel", "钢": "Steel", "不锈钢": "Stainless Steel", "塑料": "Plastic",
+                  "铝": "Aluminum", "锌": "Zinc", "铜": "Copper"}
+    if (p.material or "").strip() and not (p.material_en or "").strip():
+        p.material_en = _cn2en_std.get(p.material.strip(), "")
     p.usage = p.usage or (row.get("declareUseTo") or row.get("useTo") or "")
     p.declare_elements = p.declare_elements or (row.get("declareElements") or "")
     p.unit_price_default = p.unit_price_default or _f(row.get("declareCharge"))
@@ -790,7 +795,8 @@ def materialize_placement(db, batch, placement_option_id):
     made = []
     for sh in opt.get("shipments") or []:
         fc = sh.get("fc")
-        nsp = Shipment(batch_id=batch.id, fc_code=fc, status="已分仓")
+        nsp = Shipment(batch_id=batch.id, fc_code=fc, status="已分仓",
+                       carton_num=sh.get("boxes"), total_weight=sh.get("weight_kg"))
         db.add(nsp)
         db.flush()
         for msku, qty in (sh.get("by_sku") or {}).items():
@@ -856,7 +862,7 @@ def confirm_placement_for_batch(db, batch, placement_option_id, *, live=False):
         raise RuntimeError("确认分仓后未取到货件(检查方案/计划状态)")
     # 3) 自送运输（幂等）+ 回填
     _config_self_delivery(pid, placement_option_id, shipment_ids, store)
-    ships = _backfill_shipments(batch, pid, shipment_ids, store)
+    ships = _backfill_shipments(batch, pid, shipment_ids, store, db=db)
     batch.status = "运输已配置"
     db.commit()
     plan.update({"dry_run": False, "shipments": ships})
@@ -1057,16 +1063,28 @@ def fetch_labels(db, batch, kind="box", page_type=None, live=False):
     return plan
 
 
-def _backfill_shipments(batch, pid, shipment_ids, store):
-    """读确认后的 FC 货件(fc/地址/确认号)，**持久化 FC 收货地址到本地 Shipment**(发托书要用)。"""
+def _backfill_shipments(batch, pid, shipment_ids, store, db=None):
+    """读确认后的 FC 货件(fc/地址/确认号)，**持久化 FC 收货地址到本地 Shipment**(发托书要用)。
+
+    货件行从 DB 现查(不用 batch.shipments 关系)——materialize 删建+commit 后关系集合
+    可能过期/为空，导致 FBA号/ref 静默漏填(批次42、44/45 两次踩坑)。
+    """
     out = []
-    by_fc = {sp.fc_code: sp for sp in batch.shipments if sp.fc_code}
+    if db is not None:
+        from ..models import Shipment as _Sp
+        rows = db.query(_Sp).filter(_Sp.batch_id == batch.id).all()
+    else:
+        rows = list(batch.shipments)
+    by_fc = {sp.fc_code: sp for sp in rows if sp.fc_code}
+    unmatched = []
     for sid in shipment_ids:
         sh = fba.call("GET", f"/inbound-plans/{pid}/shipments/{sid}", store=store) or {}
         dest = sh.get("destination", {}) or {}
         addr = dest.get("address", {}) or {}
         fc = dest.get("warehouseId")
         sp = by_fc.get(fc)
+        if sp is None:
+            unmatched.append(f"{sid}->{fc}")
         if sp is not None:                    # 把亚马逊返回的 FC 收货地址写回本地货件
             cid = sh.get("shipmentConfirmationId")
             if cid:
@@ -1082,4 +1100,6 @@ def _backfill_shipments(batch, pid, shipment_ids, store):
                     "confirmationId": sh.get("shipmentConfirmationId"),
                     "city": addr.get("city"), "state": addr.get("stateOrProvinceCode"),
                     "status": sh.get("status")})
+    if unmatched:                             # 对不上号绝不能再静默——托书 FBA 号就是这么漏的
+        print(f"[回填] ⚠️ {len(unmatched)} 个货件没匹配到本地行(FBA号未落库): {unmatched}", flush=True)
     return out
