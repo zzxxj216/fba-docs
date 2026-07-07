@@ -154,14 +154,23 @@ def _fill_box_spec_from_sellfox(db, msku, p):
     p.qty_per_box = p.qty_per_box or _i(row.get("cartonQty"))
     # 报关信息一并回填(缺则补)——生成托书/报关资料的校验要用
     p.name_contract = p.name_contract or (row.get("name") or "")   # 赛狐商品全名(合同品名/规格截取源)
-    # 发票货物名称=赛狐"商品属性"自定义字段(取第一个属性值)，有值即以属性为准
-    # (赛狐未维护属性时保持现有 name_invoice——建档存的品名/为空则发票回退 MSKU)
-    rel = row.get("commodityAttributeValueRelaList") or []
-    for a in rel:
-        v = (a.get("attributeValue") or a.get("value") or "") if isinstance(a, dict) else ""
-        if str(v).strip():
-            p.name_invoice = str(v).strip()
-            break
+    # 自定义字段走商品详情V2(/api/commodity/v2/getCommodityDetail.json,传商品id)：
+    # 「品名的英文翻译」→ name_invoice(发票货物名称)；「材质的英文翻译」→ material_en。
+    # pageList 不返回自定义字段(2026-07-07 用文档密码核实)。有值即以赛狐为准。
+    if row.get("id"):
+        try:
+            det = sf.call("/api/commodity/v2/getCommodityDetail.json", {"id": row["id"]}) or {}
+            for cf in det.get("customFieldUsingVOList") or []:
+                fname = (cf.get("fieldName") or "").strip()
+                val = (cf.get("formatValue") or " ".join(cf.get("values") or [])).strip()
+                if not val:
+                    continue
+                if "品名" in fname and "英文" in fname:
+                    p.name_invoice = val
+                elif "材质" in fname and "英文" in fname:
+                    p.material_en = val
+        except Exception:
+            pass                                  # 详情拉不到不阻塞,回退已有值
     p.name_customs_cn = p.name_customs_cn or (row.get("declareNameCh") or "")
     p.name_customs_en = p.name_customs_en or (row.get("declareNameEn") or "")
     p.hs_code = p.hs_code or (row.get("hsCode") or "")
