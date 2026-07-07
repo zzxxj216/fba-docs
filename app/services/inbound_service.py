@@ -153,6 +153,15 @@ def _fill_box_spec_from_sellfox(db, msku, p):
     p.box_weight_kg = p.box_weight_kg or _f(row.get("cartonWeight"))
     p.qty_per_box = p.qty_per_box or _i(row.get("cartonQty"))
     # 报关信息一并回填(缺则补)——生成托书/报关资料的校验要用
+    p.name_contract = p.name_contract or (row.get("name") or "")   # 赛狐商品全名(合同品名/规格截取源)
+    # 发票货物名称=赛狐"商品属性"自定义字段(取第一个属性值)，有值即以属性为准
+    # (赛狐未维护属性时保持现有 name_invoice——建档存的品名/为空则发票回退 MSKU)
+    rel = row.get("commodityAttributeValueRelaList") or []
+    for a in rel:
+        v = (a.get("attributeValue") or a.get("value") or "") if isinstance(a, dict) else ""
+        if str(v).strip():
+            p.name_invoice = str(v).strip()
+            break
     p.name_customs_cn = p.name_customs_cn or (row.get("declareNameCh") or "")
     p.name_customs_en = p.name_customs_en or (row.get("declareNameEn") or "")
     p.hs_code = p.hs_code or (row.get("hsCode") or "")

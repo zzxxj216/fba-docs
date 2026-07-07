@@ -225,18 +225,32 @@ def _cm_to_in(v):
     return round(v / IN_TO_CM, 2) if v is not None else None
 
 
+def _spec_from_name(name):
+    """规格=从赛狐品名截取(2026-07-07 用户定)：去掉首个品牌词和尾部纯中文品类词。
+
+    'Byane 20英寸 325 058 76节 镶嵌链条' → '20英寸 325 058 76节'
+    """
+    toks = (name or "").split()
+    if len(toks) >= 2:
+        toks = toks[1:]                                   # 去品牌前缀
+    while toks and re.fullmatch(r"[一-鿿]+", toks[-1]):
+        toks = toks[:-1]                                  # 去尾部纯中文品类词
+    return " ".join(toks)
+
+
 def _declare_full(p):
     """报关单明细行申报要素串（对照跨运通 RPA process2/3.py「报关」块 64/66）：
 
-    '用途：{usage}|材质：{material}|品牌：{brand_name}'，有型号时追加 '|规格：{model}'
-    （RPA 用「规格」做标签且无型号时整段省略，照抄保持逐单元格一致）。
+    '用途：{usage}|材质：{material}|品牌：{brand_name}|规格：{规格}'。
+    规格优先从赛狐品名(name_contract)截取(2026-07-07 用户定)，缺品名回退 model。
     """
     if p is None:
         return ""
     s = (f"用途：{p.usage or ''}|材质：{p.material or ''}"
          f"|品牌：{p.brand_name or ''}")
-    if (p.model or "").strip():
-        s += f"|规格：{p.model}"
+    spec = _spec_from_name(p.name_contract) or (p.model or "").strip()
+    if spec:
+        s += f"|规格：{spec}"
     return s
 
 
@@ -287,8 +301,8 @@ def _item_row(it, seq, db, company):
         # 产品库没填时自动推导，避免"品名匹配不到"
         "name_contract": (p.name_contract or (
             f"{p.sku}（{p.name_customs_cn}）" if p.name_customs_cn else "")) if p else "",
-        "name_invoice": (p.name_invoice or (
-            f"{p.sku}（{p.name_customs_cn}）" if p.name_customs_cn else "")) if p else "",
+        # 发票货物名称=赛狐商品属性自定义字段(同步进 name_invoice)；未维护时回退 MSKU
+        "name_invoice": (p.name_invoice or p.sku) if p else "",
         "name_usage": (p.name_usage or p.name_customs_cn) if p else "",
         "hs_code": p.hs_code if p else "",
         "declare_elements": (p.declare_elements or "") if p else "",
