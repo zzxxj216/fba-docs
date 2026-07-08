@@ -334,14 +334,27 @@ def _plan_key(no):
     return m.group() if m else ""
 
 
-def _existing_po_for_plan(plan_group_no, days=45):
+def _existing_po_for_plan(plan_group_no, days=45, db=None):
     """赛狐近期采购单里关联此采购计划、且未取消的 PO 号（防重用）。
 
     page.json 不支持按采购计划号过滤，只能拉近 days 天采购单列表逐个比对
-    purchasePlanNoList。采购单里存的是明细号(PP)，入参可能是组号(PPG)，
-    故按数字部分匹配。best-effort：异常/查不到都返回 []（不阻断生成）。
+    purchasePlanNoList（存的是**明细号** PP…）。⚠️ 组号(PPG)和明细号(PP)共用
+    一套数字：组 PPG2607030001 的明细可以叫 PP2607030002——正好等于另一组的
+    组号数字，按"数字部分==组号"匹配会误伤(2026-07-08 实际拦错)。
+    故先取**本组自己的明细号集合**来匹配；拿不到明细时才退回组号数字。
+    best-effort：异常/查不到都返回 []（不阻断生成）。
     """
-    target = _plan_key(plan_group_no)
+    own_keys = set()
+    try:
+        grp = pps._find_group(db, plan_group_no) if db is not None else None
+        for it in (grp.get("purchasePlanItemVoList") or []) if grp else []:
+            k = _plan_key(it.get("planNo"))
+            if k:
+                own_keys.add(k)
+    except Exception:
+        pass
+    if not own_keys:                       # 拿不到明细号才退回组号数字(旧行为)
+        own_keys = {_plan_key(plan_group_no)} - {""}
     end = datetime.now()
     start = end - timedelta(days=days)
     found = []
@@ -355,7 +368,7 @@ def _existing_po_for_plan(plan_group_no, days=45):
             rows = (resp or {}).get("rows") or []
             for r in rows:
                 pol = r.get("purchasePlanNoList") or []
-                if target and any(_plan_key(x) == target for x in pol) and _i(r.get("status")) != 3:
+                if any(_plan_key(x) in own_keys for x in pol) and _i(r.get("status")) != 3:
                     no = r.get("purchaseNo")
                     if no and no not in found:
                         found.append(no)
@@ -391,7 +404,7 @@ def create_purchase_order(db, plan_group_no, action="0", dry_run=True, force=Fal
             raise RuntimeError(
                 f"该采购计划本地已记录采购单 {rec0.purchase_no}，"
                 f"如需重新生成请先作废，或勾选「强制生成」。")
-        dup = _existing_po_for_plan(plan_group_no)
+        dup = _existing_po_for_plan(plan_group_no, db=db)
         if dup:
             raise RuntimeError(
                 f"赛狐已有关联此采购计划的采购单 {','.join(dup)}（未取消），"
