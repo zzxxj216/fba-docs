@@ -62,6 +62,7 @@ FIELD_DICT = {
         "name_customs_cn": "中文报关名",
         "name_customs_en": "英文报关名",
         "name_contract": "合同用品名",
+        "name_category": "品名品类词(品名去品牌与规格,报关单商品名称)",
         "name_invoice": "发票箱单品名",
         "name_usage": "用途功能品名",
         "hs_code": "HS编码",
@@ -225,6 +226,19 @@ def _cm_to_in(v):
     return round(v / IN_TO_CM, 2) if v is not None else None
 
 
+def _category_from_name(name):
+    """品名去掉品牌词和规格段，留尾部纯中文品类词(2026-07-08 用户定,报关单商品名称用)。
+
+    'Byane 20英寸 325 058 76节 镶嵌链条' → '镶嵌链条'
+    'Byane 40mm 5/32''粒度120 10pc 链条磨头' → '链条磨头'
+    """
+    toks = (name or "").split()
+    out = []
+    while toks and re.fullmatch(r"[一-鿿]+", toks[-1]):
+        out.insert(0, toks.pop())
+    return " ".join(out)
+
+
 def _spec_from_name(name):
     """规格=从赛狐品名截取(2026-07-07 用户定)：去掉首个品牌词和尾部纯中文品类词。
 
@@ -301,6 +315,7 @@ def _item_row(it, seq, db, company):
         # 产品库没填时自动推导，避免"品名匹配不到"
         "name_contract": (p.name_contract or (
             f"{p.sku}（{p.name_customs_cn}）" if p.name_customs_cn else "")) if p else "",
+        "name_category": (_category_from_name(p.name_contract) or p.name_customs_cn or "") if p else "",
         # 发票货物名称=赛狐商品属性自定义字段(同步进 name_invoice)；未维护时回退 MSKU
         "name_invoice": (p.name_invoice or p.sku) if p else "",
         "name_usage": (p.name_usage or p.name_customs_cn) if p else "",
