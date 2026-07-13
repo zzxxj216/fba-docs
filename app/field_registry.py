@@ -10,6 +10,7 @@
   含 {} 视为格式串（{path} 替换，None→空串）。
 """
 
+import json
 import re
 from datetime import date, datetime
 
@@ -29,6 +30,14 @@ FIELD_DICT = {
         "contract_date": "合同日期",
         "contract_date_dt": "合同日期(日期对象)",
         "base_date": "发货基准日(周五)",
+        # 发货地址(Brand.source_address,建仓同源;快贝托书发件人区用)
+        "src_name": "发货人名称",
+        "src_company": "发货公司名",
+        "src_address": "发货地址",
+        "src_city": "发货城市",
+        "src_state": "发货省",
+        "src_postal": "发货邮编",
+        "src_phone": "发货电话",
     },
     "shipment": {
         "amazon_shipment_id": "FBA货件号",
@@ -63,6 +72,7 @@ FIELD_DICT = {
         "name_customs_en": "英文报关名",
         "name_contract": "合同用品名",
         "name_category": "品名品类词(品名去品牌与规格,报关单商品名称)",
+        "name_spec": "品名规格段(品名去品牌与尾部品类词,快贝托书规格型号)",
         "name_invoice": "发票箱单品名",
         "name_usage": "用途功能品名",
         "hs_code": "HS编码",
@@ -316,6 +326,7 @@ def _item_row(it, seq, db, company):
         "name_contract": (p.name_contract or (
             f"{p.sku}（{p.name_customs_cn}）" if p.name_customs_cn else "")) if p else "",
         "name_category": (_category_from_name(p.name_contract) or p.name_customs_cn or "") if p else "",
+        "name_spec": (_spec_from_name(p.name_contract) or (p.model or "").strip()) if p else "",
         # 发票货物名称=赛狐商品属性自定义字段(同步进 name_invoice)；未维护时回退 MSKU
         "name_invoice": (p.name_invoice or p.sku) if p else "",
         "name_usage": (p.name_usage or p.name_customs_cn) if p else "",
@@ -580,6 +591,11 @@ def build_context(db, batch, shipment=None):
     except (ValueError, TypeError):
         contract_dt = None
 
+    try:
+        _src = json.loads(brand.source_address) if (brand is not None
+                                                    and (brand.source_address or "").strip()) else {}
+    except (ValueError, TypeError):
+        _src = {}
     ctx = {
         "batch": {
             "name": batch.name or "",
@@ -588,6 +604,13 @@ def build_context(db, batch, shipment=None):
             "contract_date": batch.contract_date or "",
             "contract_date_dt": contract_dt,
             "base_date": batch.base_date or "",
+            "src_name": _src.get("name") or "",
+            "src_company": _src.get("company_name") or _src.get("name") or "",
+            "src_address": _src.get("address_line1") or "",
+            "src_city": _src.get("city") or "",
+            "src_state": _src.get("state_or_province_code") or "",
+            "src_postal": _src.get("postal_code") or "",
+            "src_phone": _src.get("phone_number") or "",
         },
         "company": _attr_dict(company, FIELD_DICT["company"].keys()),
         "factory": _attr_dict(factory, FIELD_DICT["factory"].keys()),
