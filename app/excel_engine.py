@@ -213,6 +213,28 @@ def _insert_rows_keep_merges(ws, ins_start, n):
         if (min_r, min_c) != (max_r, max_c):
             ws.merge_cells(start_row=min_r, start_column=min_c,
                            end_row=max_r, end_column=max_c)
+    _expand_print_area(ws, ins_start, n)
+
+
+def _expand_print_area(ws, ins_start, n):
+    """插行后同步扩展打印区域——否则表尾(签章区等)被顶出固定打印区，
+    分页预览落进灰色区域且打印丢失(报关单模板 $A$1:$S$66 之外)。"""
+    pa = ws.print_area
+    if not pa:
+        return
+    parts = pa if isinstance(pa, list) else [p.strip() for p in str(pa).split(",") if p.strip()]
+
+    def _bump(m):
+        row = int(m.group(3))
+        if row >= ins_start:
+            row += n
+        return f"{m.group(1)}{m.group(2) or ''}{row}"
+
+    new_parts = [re.sub(r"(\$?[A-Za-z]{1,3})(\$)?(\d+)", _bump, p) for p in parts]
+    if new_parts != parts:
+        # openpyxl 设置 print_area 需去掉 sheet 前缀
+        cleaned = [p.split("!")[-1] for p in new_parts]
+        ws.print_area = ",".join(cleaned)
 
 
 _ROWNUM_RE = re.compile(r"(\$?[A-Za-z]{1,3})(\$)?(\d+)")

@@ -42,7 +42,11 @@ def _company_party(c: Company):
 
 
 def _chain(db, brand: Brand):
-    """朗格系两级链：[(卖方, 买方, 系数, 合同号前缀, 交货地点, 文件名段)] ×2。"""
+    """采购合同链：[(卖方, 买方, 系数, 合同号前缀, 交货地点, 文件名段)]。
+
+    Byane/RazEdg 两级：工厂→主体(×1.13) + 主体→星盟(×1.13×1.1)。
+    Zentop 一级(2026-07-13 用户定)：朗格园林→星盟，只 ×1.13(不乘二级 1.1)。
+    """
     factory = db.get(Factory, brand.factory_id) if brand.factory_id else None
     store_co = db.get(Company, brand.company_id) if brand.company_id else None
     trade = (db.query(Company).filter(Company.type == "trade", Company.active.is_(True))
@@ -52,6 +56,11 @@ def _chain(db, brand: Brand):
     b2 = (brand.abbr2 or brand.name[:2]).upper()
     vat = rule_engine.get_rule_float(db, "vat_factor", None, 1.13)
     markup = rule_engine.get_rule_float(db, "markup_factor", None, 1.10)
+    if brand.name.lower() == "zentop":
+        return [
+            (_company_party(store_co), _company_party(trade), vat,
+             f"SA-{b2}", "货代仓库", f"{b2}2SA"),
+        ]
     return [
         (_factory_party(factory), _company_party(store_co), vat,
          f"{b2}-LG", "工厂", f"LG2{b2}"),
