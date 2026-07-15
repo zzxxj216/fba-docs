@@ -42,6 +42,9 @@ DEFAULT_RULES = {
     # 报关资料境外收货人：默认 BYANE CO., LIMITED；Serenorch(主体7玫玑研)按
     # company:7 覆盖为 AMAZON.COM SERVICES, INC.（见 docs/doc_rules/报关资料.md）
     "overseas_consignee": ("BYANE CO., LIMITED", "境外收货人"),
+    # 申报要素"加工方法"段(2026-07-15 Ding需求)：主体级配置，空=不加该段。
+    # 舟峰/保峰(company:8/9)=冲压，表面处理；玫玑研(company:7)=机织
+    "declare_process_method": ("", "申报要素加工方法"),
 }
 
 

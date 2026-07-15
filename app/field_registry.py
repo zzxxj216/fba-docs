@@ -73,6 +73,7 @@ FIELD_DICT = {
         "name_contract": "合同用品名",
         "name_category": "品名品类词(品名去品牌与规格,报关单商品名称)",
         "name_spec": "品名规格段(品名去品牌与尾部品类词,快贝托书规格型号)",
+        "name_sku_cn": "SKU（中文报关名）(舟峰/保峰/玫玑研系报关合同/发票/箱单品名)",
         "name_invoice": "发票箱单品名",
         "name_usage": "用途功能品名",
         "hs_code": "HS编码",
@@ -262,14 +263,34 @@ def _spec_from_name(name):
     return " ".join(toks)
 
 
-def _declare_full(p):
-    """报关单明细行申报要素串（对照跨运通 RPA process2/3.py「报关」块 64/66）：
+def _declare_full(p, db=None, company=None):
+    """报关单明细行申报要素串——按主体分家（2026-07-15 Ding-报关单修改需求）：
 
-    '用途：{usage}|材质：{material}|品牌：{brand_name}|规格：{规格}'。
-    规格优先从赛狐品名(name_contract)截取(2026-07-07 用户定)，缺品名回退 model。
+    - 朗格系(昕云/朗格园林/刃速等)：'用途|材质|品牌|规格：{品名截取}'（2026-07-07 定）
+    - 舟峰/保峰系(HUHOLE/BFPeaky/XINGNEST)：'用途|材质|加工方法：X|品牌|SKU'
+    - 玫玑研(Serenorch)：'用途|加工方法：X|材质|品牌|SKU'
+    加工方法走 RuleConfig `declare_process_method`(company 级；空=不加该段)。
     """
     if p is None:
         return ""
+    proc = ""
+    if db is not None and company is not None:
+        proc = (rule_engine.get_rule(db, "declare_process_method", company.id) or "").strip()
+    ctype = (getattr(company, "type", "") or "") if company is not None else ""
+    is_serenorch = company is not None and company.id == 7
+    is_zhoufeng = company is not None and company.id in (8, 9)   # 舟峰/保峰系(XINGNEST 归入后同)
+    if is_serenorch:
+        s = f"用途：{p.usage or ''}"
+        if proc:
+            s += f"|加工方法：{proc}"
+        s += f"|材质：{p.material or ''}|品牌：{p.brand_name or ''}|{p.sku}"
+        return s
+    if is_zhoufeng:
+        s = f"用途：{p.usage or ''}|材质：{p.material or ''}"
+        if proc:
+            s += f"|加工方法：{proc}"
+        s += f"|品牌：{p.brand_name or ''}|{p.sku}"
+        return s
     s = (f"用途：{p.usage or ''}|材质：{p.material or ''}"
          f"|品牌：{p.brand_name or ''}")
     spec = _spec_from_name(p.name_contract) or (p.model or "").strip()
@@ -360,7 +381,9 @@ def _item_row(it, seq, db, company):
                                    it.box_count, db=db, company_id=cid)
             if p is not None and p.box_weight_kg is not None
             and it.box_count is not None else None),
-        "declare_full": _declare_full(p),
+        "declare_full": _declare_full(p, db=db, company=company),
+        # 合同/发票/箱单品名(舟峰/保峰/玫玑研系)：SKU（中文报关名），如 Huhole-p-round-8（孔板展示挂钩）
+        "name_sku_cn": (f"{p.sku}（{p.name_customs_cn}）" if p.name_customs_cn else p.sku) if p else "",
         "customs_unit_price": price,
         "purchase_cost": cost,
         "amount": _round(qty * price, 2) if price is not None else None,
