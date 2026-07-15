@@ -178,6 +178,7 @@ FIELD_DICT = {
         "declare_address_en": "申报主体英文地址",
         "declare_phone": "申报主体电话",
         "overseas_consignee": "境外收货人(RuleConfig,可按主体覆盖)",
+        "overseas_consignee_address": "境外收货人地址(RuleConfig,可按主体覆盖)",
         # 报关/投保常量（RuleConfig 可改）
         "origin_country": "原产国",
         "dest_country": "运抵国",
@@ -544,7 +545,8 @@ def _const_calc(db, cid, country=None):
     keys = ("origin_country", "dest_country", "unit_name", "currency_customs",
             "package_type", "supervision_mode", "tax_mode", "transport_mode",
             "delivery_mode", "dest_type", "shelf_guarantee", "departure_port",
-            "fragile", "insurance_currency", "insurance_ratio", "overseas_consignee")
+            "fragile", "insurance_currency", "insurance_ratio", "overseas_consignee",
+            "overseas_consignee_address")
     out = {k: rule_engine.get_rule(db, k, cid) for k in keys}
     cc = (country or "").strip().upper()
     if cc in _DEST_COUNTRY_CN:
