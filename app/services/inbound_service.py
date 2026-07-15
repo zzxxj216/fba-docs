@@ -576,30 +576,35 @@ _EXPECTED_ITEM_RE = re.compile(
 
 
 def _build_package_groupings(pid, po, items, sku_boxes_fn, store):
-    """按装箱组归属把每个 SKU 的箱子分到对应 packing group。单组=原行为；
-    组接口查不到归属的 SKU 兜底放第一组。"""
+    """按装箱组归属 + **组内期望数量** 分配箱子。
+
+    同一 SKU 可能被亚马逊拆进多个组、各组只要部分数量(德国站中欧计划按目的国拆组，
+    如 500 件拆成 283/134/83)——必须按组期望量各自成箱，整量塞一组会被拒
+    "did not contain expected items and/or quantities"。单组=原行为。
+    sku_boxes_fn(it, qty=None)：按 qty(缺省=明细整量)生成该 SKU 的箱子列表。"""
     groups = po.get("packingGroups") or [None]
-    group_skus = {}
+    group_qty = {}                      # gid -> {msku: 该组期望数量}
     for gid in groups:
         if not gid:
             continue
         gitems = fba.call("GET", f"/inbound-plans/{pid}/packing-groups/{gid}/items",
                           store=store) or {}
-        group_skus[gid] = {(x.get("msku") or "").strip()
-                           for x in (gitems.get("items") or [])}
-    package_groupings, assigned = [], set()
+        group_qty[gid] = {(x.get("msku") or "").strip(): int(x.get("quantity") or 0)
+                          for x in (gitems.get("items") or [])}
+    package_groupings, assigned = [], {}
     for gid in groups:
         gboxes = []
         for it in items:
-            if len(groups) == 1 or it["msku"] in group_skus.get(gid, set()):
-                gboxes.extend(sku_boxes_fn(it))
-                assigned.add(it["msku"])
+            q = it["quantity"] if len(groups) == 1 else group_qty.get(gid, {}).get(it["msku"], 0)
+            if q > 0:
+                gboxes.extend(sku_boxes_fn(it, q))
+                assigned[it["msku"]] = assigned.get(it["msku"], 0) + q
         if gboxes:
             package_groupings.append({"packingGroupId": gid, "boxes": gboxes})
-    leftover = [it for it in items if it["msku"] not in assigned]
+    leftover = [it for it in items if assigned.get(it["msku"], 0) <= 0]
     if leftover and package_groupings:
         for it in leftover:
-            package_groupings[0]["boxes"].extend(sku_boxes_fn(it))
+            package_groupings[0]["boxes"].extend(sku_boxes_fn(it, it["quantity"]))
     return package_groupings
 
 
@@ -735,9 +740,9 @@ def build_for_batch(db, batch):
             d["expiration"] = ai["expiration"]
         owner_map[ai["msku"]] = d
 
-    def _sku_boxes(it):
+    def _sku_boxes(it, qty=None):
         upb = it["units_per_box"]
-        full, rem = divmod(it["quantity"], upb)
+        full, rem = divmod(qty if qty is not None else it["quantity"], upb)
         dims = {"unitOfMeasurement": "IN", "length": it["l_in"], "width": it["w_in"], "height": it["h_in"]}
         wt = {"unit": "LB", "value": it["weight_lb"]}
         line = {"msku": it["msku"],
