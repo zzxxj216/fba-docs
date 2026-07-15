@@ -65,6 +65,18 @@ def _store(db, brand_id):
     return (b.amazon_store or "") if b else ""
 
 
+# 欧洲站批次 → 用品牌店铺的 _eu 凭据(mcapi 按区分店铺:byane/byane_eu)
+_EU_COUNTRIES = {"DE", "FR", "IT", "ES", "NL", "SE", "PL", "BE", "IE", "UK", "GB", "EU"}
+
+
+def _store_for_batch(db, batch):
+    s = _store(db, batch.brand_id)
+    country = (batch.country or batch.marketplace or "").strip().upper()
+    if s and country in _EU_COUNTRIES and not s.endswith("_eu"):
+        return f"{s}_eu"
+    return s
+
+
 def _loads(s, default):
     try:
         return json.loads(s) if s else default
@@ -624,7 +636,7 @@ def build_for_batch(db, batch):
                 if v is not None:
                     it.customs_unit_price = v
     db.flush()
-    store = _store(db, batch.brand_id) or None
+    store = _store_for_batch(db, batch) or None
     spec = {it["msku"]: it for it in items}
 
     api_items = [{"msku": it["msku"], "quantity": it["quantity"],
@@ -854,7 +866,7 @@ def confirm_placement_for_batch(db, batch, placement_option_id, *, live=False):
     chosen = next((o for o in opts if o.get("placement_option_id") == placement_option_id), None)
     if not chosen:
         raise RuntimeError(f"分仓方案 {placement_option_id} 不在该批次方案里")
-    store = _store(db, batch.brand_id) or None
+    store = _store_for_batch(db, batch) or None
     fcs = [s.get("fc") for s in (chosen.get("shipments") or [])]
     plan = {"inbound_plan_id": pid, "store": store or "main(默认)",
             "placement_option_id": placement_option_id, "fcs": fcs,
@@ -1011,7 +1023,7 @@ def fetch_labels(db, batch, kind="box", page_type=None, live=False):
     pid = batch.inbound_plan_id
     if not pid:
         raise RuntimeError("批次未建仓（无 inbound_plan_id）")
-    store = _store(db, batch.brand_id) or None
+    store = _store_for_batch(db, batch) or None
     page_type = page_type or ("PackageLabel_Thermal" if kind == "box" else "LETTER_30")
     plan = {"batch": batch.name, "kind": kind, "page_type": page_type, "inbound_plan_id": pid,
             "steps": ["取标签下载链接", "下载 PDF", "按页型剪切成单张", "归档"]}
