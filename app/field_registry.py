@@ -533,13 +533,23 @@ def _agg_item_rows(all_item_rows):
     return rows
 
 
-def _const_calc(db, cid):
-    """报关/投保常量（走 RuleConfig）。"""
+# 批次国家 → 报关"运抵国/目的国"中文名(非美国站时覆盖 RuleConfig 默认"美国")
+_DEST_COUNTRY_CN = {"US": "美国", "CA": "加拿大", "MX": "墨西哥", "DE": "德国", "FR": "法国",
+                    "IT": "意大利", "ES": "西班牙", "UK": "英国", "GB": "英国", "NL": "荷兰",
+                    "SE": "瑞典", "PL": "波兰", "BE": "比利时", "IE": "爱尔兰"}
+
+
+def _const_calc(db, cid, country=None):
+    """报关/投保常量（走 RuleConfig）。country=批次国家，非空时覆盖目的国。"""
     keys = ("origin_country", "dest_country", "unit_name", "currency_customs",
             "package_type", "supervision_mode", "tax_mode", "transport_mode",
             "delivery_mode", "dest_type", "shelf_guarantee", "departure_port",
             "fragile", "insurance_currency", "insurance_ratio", "overseas_consignee")
-    return {k: rule_engine.get_rule(db, k, cid) for k in keys}
+    out = {k: rule_engine.get_rule(db, k, cid) for k in keys}
+    cc = (country or "").strip().upper()
+    if cc in _DEST_COUNTRY_CN:
+        out["dest_country"] = _DEST_COUNTRY_CN[cc]
+    return out
 
 
 def _shipment_calc(db, batch, sp, item_rows, company):
@@ -567,7 +577,7 @@ def _shipment_calc(db, batch, sp, item_rows, company):
     calc["declare_uscc"] = (declarer.uscc or "") if declarer else ""
     calc["declare_address_en"] = (declarer.address_en or "") if declarer else ""
     calc["declare_phone"] = (declarer.phone or "") if declarer else ""
-    calc.update(_const_calc(db, cid))
+    calc.update(_const_calc(db, cid, country=batch.country))
     # 行级 calc 的批次/货件级兜底：取第一明细行；保价金额取合计
     if item_rows:
         first = item_rows[0]["calc"]
