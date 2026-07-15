@@ -68,6 +68,15 @@ def _store(db, brand_id):
 # 欧洲站批次 → 用品牌店铺的 _eu 凭据(mcapi 按区分店铺:byane/byane_eu)
 _EU_COUNTRIES = {"DE", "FR", "IT", "ES", "NL", "SE", "PL", "BE", "IE", "UK", "GB", "EU"}
 
+# 国家 → marketplace id(建计划 destinationMarketplaces 用)
+_MARKETPLACE_IDS = {
+    "US": "ATVPDKIKX0DER", "CA": "A2EUQ1WTGCTBG2", "MX": "A1AM78C64UM0Y8",
+    "DE": "A1PA6795UKMFR9", "FR": "A13V1IB3VIYZZH", "IT": "APJ6JRA9NG5V4",
+    "ES": "A1RKKUPIHCS9HS", "UK": "A1F83G8C2ARO7P", "GB": "A1F83G8C2ARO7P",
+    "NL": "A1805IZSGTT6HS", "SE": "A2NODRKZP88ZB9", "PL": "A1C3SOZRARQ6R3",
+    "BE": "AMEN7PMS3EDWL", "IE": "A28R8C7NBKEWEA",
+}
+
 
 def _store_for_batch(db, batch):
     s = _store(db, batch.brand_id)
@@ -644,9 +653,15 @@ def build_for_batch(db, batch):
 
     src_addr = _source_address(db, batch.brand_id)   # 缺发货地址在建 plan 前就报错
 
+    # 欧洲多国共用一套 _eu 凭据但 marketplace 各异(byane_eu 默认配的是 UK)——
+    # 按批次国家显式传目标市场,否则 DE 批次会被按 UK 校验、SKU 全部"not valid"。
+    create_body = {"name": batch.name, "source_address": src_addr, "items": api_items}
+    mkid = _MARKETPLACE_IDS.get((batch.country or batch.marketplace or "").strip().upper())
+    if mkid and (store or "").endswith("_eu"):
+        create_body["destination_marketplaces"] = [mkid]
+
     def _create():
-        return fba.call("POST", "/inbound-plans", store=store, timeout=90,
-                        json={"name": batch.name, "source_address": src_addr, "items": api_items})
+        return fba.call("POST", "/inbound-plans", store=store, timeout=90, json=create_body)
 
     # 部分 SKU（无标/Amazon贴标）只接受 labelOwner/prepOwner=NONE：亚马逊逐条报
     # "ERROR: <MSKU> does not require labelOwner ... Accepted values: [NONE]"。
