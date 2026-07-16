@@ -123,6 +123,13 @@ def _do_one(db, batch, tmpl, mapping, shipment, out_dir, result,
         return None
 
 
+
+def _batch_dir_name(batch):
+    """输出目录名=批次名+基准日期MMDD(2026-07-16 用户定:文件夹都要带时间)。"""
+    name = _safe_name(batch.name or f"batch-{batch.id}")
+    mmdd = (batch.base_date or "").replace("-", "")[4:8]
+    return f"{name}-{mmdd}" if mmdd else name
+
 def generate(db, batch_id, template_ids):
     """一键生成。返回 {"generated": [...], "errors": [...]} 或 {"blocked": true}。"""
     batch = db.get(Batch, batch_id)
@@ -143,7 +150,7 @@ def generate(db, batch_id, template_ids):
             pass
 
     result = {"generated": [], "errors": []}
-    batch_dir = os.path.join(OUTPUT_DIR, _safe_name(batch.name or f"batch-{batch.id}"))
+    batch_dir = os.path.join(OUTPUT_DIR, _batch_dir_name(batch))
 
     for tid in template_ids or []:
         tmpl = db.get(Template, tid)
