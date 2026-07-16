@@ -192,8 +192,8 @@ def generate_two_level(db, batch_id, persist=True):
         out["warnings"].append("缺赛狐全名/成本：" + ", ".join(sorted(set(missing))))
     date_s = contract_date.strftime("%Y-%m-%d")
     mmdd = base.strftime("%m%d") if hasattr(base, "strftime") else str(base)
-    batch_dir = os.path.join(OUTPUT_DIR, re.sub(r'[\\/:*?"<>|]', "_", batch.name or f"batch-{batch.id}"),
-                             "采购合同")
+    from .generate_service import _batch_dir_name
+    batch_dir = os.path.join(OUTPUT_DIR, _batch_dir_name(batch), "采购合同")
     for seller, buyer, factor, prefix, place, tag in _chain(db, brand):
         crows = [{**r, "price": (r["cost"] or 0) * factor} for r in rows]
         no = f"{prefix}-{date_s}"

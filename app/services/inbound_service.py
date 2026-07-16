@@ -1050,7 +1050,8 @@ def fetch_labels(db, batch, kind="box", page_type=None, live=False):
     if not live:
         plan["dry_run"] = True
         return plan                       # 🛑 演练：到此为止，不碰亚马逊
-    out_dir = os.path.join(OUTPUT_DIR, re.sub(r'[\\/:*?"<>|]', "_", batch.name or f"batch{batch.id}"), "labels")
+    from .generate_service import _batch_dir_name
+    out_dir = os.path.join(OUTPUT_DIR, _batch_dir_name(batch), "labels")
     raw_dir = os.path.join(out_dir, "原始")      # 原始(亚马逊下载的整页)
     cut_dir = os.path.join(out_dir, "裁剪")      # 裁剪好的(贴标用)
     os.makedirs(raw_dir, exist_ok=True)
