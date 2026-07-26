@@ -617,9 +617,13 @@ def build_for_batch(db, batch):
     from ..models import Batch  # 避免顶层循环引用
     if batch.inbound_plan_id:        # 已建过仓 → 直接返回，不重复创建真实亚马逊入库计划
         try:
-            return json.loads(batch.placement_options or "[]")
+            opts = json.loads(batch.placement_options or "[]")
         except (ValueError, TypeError):
-            return []
+            opts = []
+        # 与正常完成同为 dict 形状；already_built + option_count=0 即"半途失败卡死态"，
+        # 恢复需人工（手动取消亚马逊草稿计划后清 inbound_plan_id），调用方勿自动重试
+        return {"inbound_plan_id": batch.inbound_plan_id,
+                "option_count": len(opts), "already_built": True}
     raw = [{"msku": it.msku, "quantity": it.qty}
            for sp in batch.shipments for it in sp.items if (it.qty or 0) > 0]
     if not raw:
@@ -673,9 +677,11 @@ def build_for_batch(db, batch):
     # 据错误把对应 SKU 改成 NONE 重试（多个 SKU、label+prep 都可能，故循环几轮）。
     # 校验既可能同步拒绝(create 502)，也可能异步失败(create 返回 operationId 后
     # wait_operation FAILED，如效期)。故 create+wait 一起放进重试：据错误把 SKU 的
-    # labelOwner/prepOwner 改 NONE、或补效期(今天+1月)，再重试；重试前取消已建的草稿计划避免残留。
+    # labelOwner/prepOwner 改 NONE、或补效期(今天+1月)，再重试。
+    # 重试留下的草稿计划不自动取消（红线），累积进 draft_pids 并入最终报错供人工清理。
     resp = None
     last_err = ""
+    draft_pids = []
     for _ in range(8):
         pid_try = None
         try:
@@ -688,6 +694,7 @@ def build_for_batch(db, batch):
         except RuntimeError as e:
             last_err = str(e)
             if pid_try:                       # 红线：Claude 不做任何取消——留下的草稿计划报告给用户手动清
+                draft_pids.append(pid_try)
                 print(f"[建仓] 校验失败留下草稿计划 {pid_try}（不自动取消，请手动清理）", flush=True)
             # 注意：错误来自 JSON，含引号的 SKU 会被转义成 6\"，需去掉反斜杠再匹配 api_items
             _clean = lambda xs: {s.replace("\\", "") for s in xs}
@@ -711,13 +718,17 @@ def build_for_batch(db, batch):
                 break
     if resp is None:
         acct = store or "main(默认)"
+        drafts = (f"；本次留下草稿入库计划待手动取消：{', '.join(draft_pids)}"
+                  if draft_pids else "")
         # owner/效期类是可修的校验问题，不是账户问题——别误导成账户没映射
         owner_issue = ("does not require" in last_err or "Expiration date required" in last_err)
         if not owner_issue and ("not valid" in last_err or "MSKU" in last_err):
             raise RuntimeError(
                 f"建仓账户=「{acct}」拒绝了这些 SKU（多半是该品牌没映射到正确的亚马逊账户）。"
-                f"请在「主体与品牌」给品牌设置 amazon_store、并确保该账户凭据已配进 mcapi。原始：{last_err[:300]}")
-        raise RuntimeError(f"建仓 create 校验失败（已自动重试 owner/效期仍未通过）：{last_err[:500]}")
+                f"请在「主体与品牌」给品牌设置 amazon_store、并确保该账户凭据已配进 mcapi。"
+                f"原始：{last_err[:300]}{drafts}")
+        raise RuntimeError(
+            f"建仓 create 校验失败（已自动重试 owner/效期仍未通过）：{last_err[:500]}{drafts}")
     pid = resp.get("inboundPlanId", "")
     batch.inbound_plan_id = pid
     db.commit()

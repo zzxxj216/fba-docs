@@ -168,6 +168,50 @@ def build_batch(batch_id: int, db: Session = Depends(get_db)):
         raise HTTPException(502, str(e))
 
 
+@router.post("/batches/{batch_id}/confirm-placement")
+def confirm_placement(batch_id: int, data: dict, db: Session = Depends(get_db)):
+    """确认分仓方案 + 配自送运输 + 回填货件（批次线门B）。body: {placement_option_id, live}。
+
+    live 缺省 false=演练：不碰亚马逊，但会 materialize 本地逐 FC 货件行（有 fc_code 保护）。
+    live=true 真实写亚马逊（确认方案=正式生成货件，不可逆），须逐次显式传入；
+    自送运输采样最多 30 轮，最坏 20-30 分钟，客户端需配长超时。
+    （飞书通道仍走 INBOUND_LIVE_SUBMIT 环境变量门控，与本端点互不影响。）"""
+    b = db.get(Batch, batch_id)
+    if b is None:
+        raise HTTPException(404, f"批次 {batch_id} 不存在")
+    data = data or {}
+    poid = (data.get("placement_option_id") or "").strip()
+    if not poid:
+        raise HTTPException(400, "缺少 placement_option_id")
+    try:
+        return inbound_service.confirm_placement_for_batch(
+            db, b, poid, live=bool(data.get("live", False)))
+    except RuntimeError as e:
+        db.rollback()
+        raise HTTPException(502, str(e))
+
+
+@router.post("/batches/{batch_id}/labels")
+def batch_labels(batch_id: int, data: dict, db: Session = Depends(get_db)):
+    """下载并整理箱唛/FNSKU 标签（批次线门C）。body: {kind: box|fnsku, page_type?, live}。
+
+    live 缺省 false=演练只返回步骤；live=true 真实取标签并归档到 output/{批次}/labels。"""
+    b = db.get(Batch, batch_id)
+    if b is None:
+        raise HTTPException(404, f"批次 {batch_id} 不存在")
+    data = data or {}
+    kind = (data.get("kind") or "box").strip()
+    if kind not in ("box", "fnsku"):
+        raise HTTPException(400, "kind 只支持 box | fnsku")
+    try:
+        return inbound_service.fetch_labels(
+            db, b, kind=kind, page_type=data.get("page_type") or None,
+            live=bool(data.get("live", False)))
+    except RuntimeError as e:
+        db.rollback()
+        raise HTTPException(502, str(e))
+
+
 @router.post("/batches/{batch_id}/sop")
 def toggle_sop(batch_id: int, data: dict, db: Session = Depends(get_db)):
     """勾选/取消一个 SOP 手动步骤。body: {step_key, done}。返回最新 SOP 进度。"""
