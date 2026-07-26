@@ -10,7 +10,7 @@ from sqlalchemy.orm import Session
 from .. import seed
 from ..database import get_db
 from ..models import GeneratedDoc
-from ..services import generate_service
+from ..services import contract_service, generate_service
 
 router = APIRouter()
 
@@ -23,6 +23,21 @@ class GenerateIn(BaseModel):
 def generate(batch_id: int, body: GenerateIn, db: Session = Depends(get_db)):
     """强制先校验，passed 才生成；逐模板报错不互相影响。"""
     return generate_service.generate(db, batch_id, body.template_ids)
+
+
+@router.post("/batches/{batch_id}/contracts")
+def generate_contracts(batch_id: int, data: dict = None, db: Session = Depends(get_db)):
+    """生成两级采购合同（朗格系两份：工厂→店铺、店铺→星盟；其它店一份，系数走 RuleConfig）。
+
+    body: {persist: bool=true}——persist=false 只写文件不落 GeneratedDoc 记录（试跑用）。
+    文件写入 output/{批次名-MMDD}/采购合同/，同名静默覆盖。
+    返回 {generated:[绝对路径], warnings:[...]}。"""
+    try:
+        return contract_service.generate_two_level(
+            db, batch_id, persist=bool((data or {}).get("persist", True)))
+    except RuntimeError as e:
+        db.rollback()
+        raise HTTPException(404 if "不存在" in str(e) else 502, str(e))
 
 
 @router.get("/batches/{batch_id}/preview")

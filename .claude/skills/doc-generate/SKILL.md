@@ -82,9 +82,10 @@ POST /api/batches/{id}/generate   {"template_ids": [...]}
 - 上游：建仓 skill（货件/FC 齐了才有生成对象；箱唛标签走建仓 skill 门 C，同一 output 目录）。
 - 询价 skill 选定货代后需落到货件（PUT /api/shipments/{id} 设 forwarder_id）——托书模板
   按货代匹配靠它；投保单依赖人工回填的 forwarder_order_no。
-- 两级采购合同（朗格系 BY/ZE/RA：工厂→店铺×1.13、店铺→星盟×1.13×1.1）目前**无 REST 端点**
-  （contract_service.generate_two_level 仅进程内可调）——用户要两级合同时如实说明，
-  引导走前端或等接线，不谎称有 API。
+- 两级采购合同（朗格系 BY/ZE/RA：工厂→店铺、店铺→星盟，系数走 RuleConfig）：
+  `POST /api/batches/{id}/contracts`，body `{persist: true}`（persist=false 试跑：只写文件
+  不落记录）。返回 {generated:[路径], warnings}。warnings 里"缺赛狐全名/成本"要念给用户；
+  同名文件静默覆盖，生成前与其它文档同样确认。其它店铺调用会生成单份合同，同端点。
 
 ## 待拍板提示（doc_rules 里的 ⚠️ 项，首次生成对应文档时主动提醒）
 
