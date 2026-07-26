@@ -149,12 +149,79 @@ def _search_plans(page=1, page_size=20, start=None, end=None):
     return (data.get("rows") or []), _i(data.get("totalSize")) or 0
 
 
-def list_plans(db, page=1, page_size=20, status=None):
-    """列采购计划（全部状态，近 60 天）。status 指定时按 status_label 过滤
-    （待审核/待采购/已采购）；返回 status_counts 供前端筛选标签。
-    近 60 天通常 < 100 条，一次拉全部后内存按状态分类、过滤、分页。"""
-    rows, _ = _search_plans(page=1, page_size=100)
+_FETCH_MAX_ROWS = 500   # 翻页拉全上限（每页 1 次赛狐调用，限流 1.1s/次）
+
+
+def _fetch_all_rows(days=None):
+    """按时间窗翻页拉全采购计划（每页 100，最多 _FETCH_MAX_ROWS 条）。
+    返回 (rows, 赛狐侧总条数)——rows 少于总条数即被上限截断，调用方要透出。"""
+    end = datetime.now()
+    start = end - timedelta(days=days or DEFAULT_RANGE_DAYS)
+    rows, total = _search_plans(page=1, page_size=100, start=start, end=end)
+    page = 1
+    while rows and len(rows) < min(total, _FETCH_MAX_ROWS):
+        page += 1
+        more, _ = _search_plans(page=page, page_size=100, start=start, end=end)
+        if not more:
+            break
+        rows.extend(more)
+    return rows, total
+
+
+def _resolve_shop_key(brands, shop):
+    """shop 入参 → 匹配用品牌名。接受品牌缩写(ZE/RA/BY)、品牌名(Zentop)；
+    解析不到 Brand 时原样返回，走店铺名包含匹配。"""
+    w = _s(shop).strip()
+    if not w:
+        return ""
+    for b in brands:
+        if (b.abbr2 or "").upper() == w.upper() or (b.name or "").lower() == w.lower():
+            return b.name
+    return w
+
+
+def _group_matches(g, brand_name, site, brand_sites):
+    """组内任一明细同时命中店铺+站点即算命中（不能只看首明细，混合计划会漏）。
+    店铺按 shopName '-' 前段或 brandName 匹配（shopName 形如 Zentop-US；
+    未建仓的明细 shopName 可能为空，靠 brandName 兜底）；
+    site 接受中文站名(美国)或国家码(US)——明细无 siteName（未关联店铺的计划，
+    ZE/RA/BY 常态）时用品牌 default_site 兜底参与匹配。"""
+    want_site = _s(site).strip()
+
+    def shop_ok(it):
+        if not brand_name:
+            return True
+        w = brand_name.lower()
+        sn = _s(it.get("shop_name"))
+        head = sn.split("-")[0].strip().lower() if sn else ""
+        return head == w or _s(it.get("brand_name")).lower() == w or (
+            bool(sn) and w in sn.lower())
+
+    def site_ok(it):
+        if not want_site:
+            return True
+        sname = _s(it.get("site_name"))
+        if not sname:
+            key = (_s(it.get("brand_name")) or
+                   _s(it.get("shop_name")).split("-")[0].strip()).lower()
+            sname = brand_sites.get(key, "")
+        return sname == want_site or _COUNTRY.get(sname, "").upper() == want_site.upper()
+
+    return any(shop_ok(it) and site_ok(it) for it in (g.get("items") or []))
+
+
+def list_plans(db, page=1, page_size=20, status=None, shop=None, site=None, days=None):
+    """列采购计划。status 按 status_label 过滤（待审核/待采购/已采购/已驳回）；
+    shop=品牌缩写(ZE/RA/BY)/品牌名/店铺名，site=中文站名或国家码，days 覆盖默认
+    60 天时间窗。赛狐 search.json 不支持店铺/站点入参，故翻页拉全后内存过滤；
+    status_counts 统计的是 shop/site 过滤后的全集（按店铺看各状态数量）。"""
+    rows, sellfox_total = _fetch_all_rows(days=days)
     groups = [_group_view(db, r) for r in rows]
+    brands = db.query(Brand).all()
+    brand_name = _resolve_shop_key(brands, shop)
+    if brand_name or _s(site).strip():
+        brand_sites = {(b.name or "").lower(): _s(b.default_site) for b in brands}
+        groups = [g for g in groups if _group_matches(g, brand_name, site, brand_sites)]
     counts = {"全部": len(groups)}
     for lbl in ("待审核", "待采购", "已采购", "已驳回"):
         counts[lbl] = sum(1 for g in groups if g.get("status_label") == lbl)
@@ -166,6 +233,9 @@ def list_plans(db, page=1, page_size=20, status=None):
         "page": page,
         "total_size": len(groups),
         "status_counts": counts,
+        # 赛狐侧原始总条数；大于已拉取数说明触到 _FETCH_MAX_ROWS 截断，需缩小时间窗
+        "sellfox_total": sellfox_total,
+        "fetched": len(rows),
     }
 
 
@@ -527,7 +597,12 @@ def import_plan(db, plan_group_no, inbound_plan_id):
     return result
 
 
-_COUNTRY = {"美国": "US", "英国": "UK", "加拿大": "CA", "德国": "DE", "日本": "JP"}
+_COUNTRY = {
+    "美国": "US", "英国": "UK", "加拿大": "CA", "德国": "DE", "日本": "JP",
+    "法国": "FR", "意大利": "IT", "西班牙": "ES", "荷兰": "NL", "瑞典": "SE",
+    "波兰": "PL", "比利时": "BE", "爱尔兰": "IE", "墨西哥": "MX",
+    "澳大利亚": "AU", "新加坡": "SG", "阿联酋": "AE", "巴西": "BR",
+}
 
 
 def import_plan_only(db, plan_group_no):

@@ -57,11 +57,15 @@ async def import_excel(file: UploadFile = File(...),
 # ---------------------------------------------------------------- 采购计划
 
 @router.get("/sync/purchase-plans")
-def list_purchase_plans(page: int = 1, status: str = "", db: Session = Depends(get_db)):
-    """列采购计划（近 60 天，全部状态）。status=待审核/待采购/已采购 时按状态过滤
-    → {plans, page, total_size, status_counts}。"""
+def list_purchase_plans(page: int = 1, status: str = "", shop: str = "", site: str = "",
+                        days: int = 0, db: Session = Depends(get_db)):
+    """列采购计划（默认近 60 天）。status=待审核/待采购/已采购/已驳回；
+    shop=品牌缩写(ZE/RA/BY)/品牌名/店铺名；site=中文站名(美国)或国家码(US)；
+    days 覆盖时间窗 → {plans, page, total_size, status_counts, sellfox_total, fetched}。"""
     try:
-        return purchase_plan_service.list_plans(db, page, status=status or None)
+        return purchase_plan_service.list_plans(
+            db, page, status=status or None, shop=shop or None,
+            site=site or None, days=days or None)
     except RuntimeError as e:
         raise HTTPException(502, str(e))
 
