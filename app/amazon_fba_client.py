@@ -15,14 +15,12 @@ import httpx
 
 API_PREFIX = "/api/v1/amazon/fba"
 _BASE = None
+_KEY = None
 
 
-def _base():
-    """mcapi base url：环境变量 MCAPI_BASE > .env（带 BOM 兜底）> 默认 8100。"""
-    global _BASE
-    if _BASE is not None:
-        return _BASE
-    val = (os.getenv("MCAPI_BASE") or "").strip()
+def _env_val(name):
+    """读配置：环境变量优先，退回手工解析 .env（utf-8-sig 兜底 BOM）。"""
+    val = (os.getenv(name) or "").strip()
     if not val:
         base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         env_path = os.path.join(base_dir, ".env")
@@ -30,11 +28,26 @@ def _base():
             with open(env_path, encoding="utf-8-sig") as f:
                 for line in f:
                     line = line.strip()
-                    if line.startswith("MCAPI_BASE") and "=" in line and not line.startswith("#"):
+                    if line.startswith(name) and "=" in line and not line.startswith("#"):
                         val = line.partition("=")[2].strip().strip('"').strip("'")
                         break
-    _BASE = (val or "http://127.0.0.1:8100").rstrip("/")
+    return val
+
+
+def _base():
+    """mcapi base url：环境变量 MCAPI_BASE > .env > 默认 8100。"""
+    global _BASE
+    if _BASE is None:
+        _BASE = (_env_val("MCAPI_BASE") or "http://127.0.0.1:8100").rstrip("/")
     return _BASE
+
+
+def _key():
+    """mcapi X-API-Key（每运营一把）：MCAPI_KEY，空=不带头（mcapi 未启用鉴权时兼容）。"""
+    global _KEY
+    if _KEY is None:
+        _KEY = _env_val("MCAPI_KEY")
+    return _KEY
 
 
 def call(method, path, params=None, json=None, store=None, timeout=60):
@@ -46,8 +59,10 @@ def call(method, path, params=None, json=None, store=None, timeout=60):
     q = dict(params or {})
     if store:
         q["store"] = store
+    headers = {"X-API-Key": _key()} if _key() else None
     try:
-        r = httpx.request(method, url, params=q, json=json, timeout=timeout)
+        r = httpx.request(method, url, params=q, json=json, timeout=timeout,
+                          headers=headers)
     except httpx.HTTPError as e:
         raise RuntimeError(f"建仓服务(mcapi)连接失败：{e}（确认 mcapi 已在 {_base()} 运行）")
     if r.status_code >= 400:

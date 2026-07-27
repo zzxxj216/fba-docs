@@ -82,15 +82,19 @@ def send_message(db, forwarder, content, inquiry_id=None, batch_id=None, no_read
 
 
 def _one_event(db, ev):
-    """处理单个事件：只收 cmd=15000 的真实聊天消息（有正文、非自己回显），其余返回 None。"""
+    """处理单个事件：只收 cmd=15000 的真实聊天消息（非自己回显），其余返回 None。
+
+    无正文的富媒体消息（图片/文件报价）**也落库**存 raw——图片链路的字段结构
+    （base64RawData 还是需另调媒体下载接口）从未有过真实样本，先攒 raw 再定方案
+    （OPENSOURCE_PLAN.md §4.5-I.3）。下游安全：归属对空正文走引用/单开放询价，
+    自动提取只处理非空正文或已带 media 路径的 image。
+    """
     if not isinstance(ev, dict):
         return None
     if ev.get("cmd") != REAL_MSG_CMD:
         return None                                  # 系统事件（登录态/已读回执等）
     msg_data = ev.get("msgData") or {}
     content = msg_data.get("content") or ""
-    if not content:
-        return None                                  # 富媒体/无正文，暂不收
     our_id = str(ev.get("userId") or "")
     sender = str(ev.get("senderId") or "")
     if sender and sender == our_id:
