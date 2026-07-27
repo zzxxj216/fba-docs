@@ -62,8 +62,8 @@
 | 1.3 | mcapi 审计日志：鉴权依赖里对全部写方法自动落库（operator/method/path/时间/摘要）；另开 `POST /api/v1/audit/log` 供本地实例上报纯本地动作（生成文件/校验） | 0.5天 |
 | 1.4 | **关键节点登记 API**（防重+追溯核心）：`POST /api/v1/checkpoints` body={scope_key, node, operator, refs}，scope_key 唯一约束（如 `PPG2607240001:build`、`PPG2607240001:po`）——已存在且非本人 → 409 返回先占者信息；`GET /api/v1/checkpoints?scope=` 查追溯链。存 mcapi 自己的 MySQL | 0.5-1天 |
 | 1.5 | fba-docs 在四个关键写入点接入 claim：build_for_batch 前、create_purchase_order(dry_run=false) 前、confirm-placement(live) 前、询价 send 前——先 POST checkpoint 占坑，409 则中止并提示"运营X已在Y时间操作过"；成功后回填 refs（inbound_plan_id/purchase_no/FBA号）。服务器不可达时的策略：**默认拒绝执行写操作**（fail-closed，防脱网双开） | 1天 |
-| 1.6 | LLM 代理（若 §8.1 询价放开）：mcapi `POST /api/v1/llm/chat` 透传 jiekou.ai；fba-docs llm_client/ai_mapping 并入网关路径，消灭 ANTHROPIC/LLM key | 1天 |
-| 1.7 | 通道 worker：服务器跑一份 fba-docs（CHANNEL_WORKER=1，含全量密钥+direct 模式），收企微 webhook；收到的货代消息写入**服务器暂存**（mcapi 消息中继表），运营端轮询 `GET /api/v1/relay/messages?inquiry_ref=` 拉回本地库归属提取 | 1天（中继部分视 §8.1） |
+| 1.6 | ~~LLM 代理~~ **取消**（拍板 2026-07-27）：报价提取/归属判别/AI 映射全部由运营端 **Codex 承担**（它就是 LLM）。连锁红利：服务器也不再需要 LLM——ANTHROPIC_API_KEY/LLM_* 三键整体退役，jiekou.ai 账号可停；llm_client/quote_extractor_llm/ai_mapping 保留优雅降级不删 | 0 |
+| 1.7 | **mcapi 消息中继**（取代"fba-docs 通道 worker"，飞书已在删除清单，worker 实例不再需要）：① mcapi 加 `POST /api/qiwe/callback` 存中继表（qiweapi 回调地址本就指向该服务器——mca_run.log 里持续 404 佐证，加路由即通）；② `POST /api/v1/qiwe/send` 发送代理（QIWE_TOKEN 只在服务器）；③ `GET /api/v1/qiwe/relay/messages?room_ids=&since=` 运营端拉取；④ 切换期用 sync_msgs 补拉兜底（游标式全量，服务器侧跑） | 1-1.5天 |
 
 **运营端 .env 定稿（.env.example 进仓库）**：
 ```
@@ -72,6 +72,18 @@ MCAPI_KEY=<每人一把>
 OPERATOR_NAME=<运营名>
 # DB_URL 不配 = 默认本地 SQLite ./fba_docs.db；老机器可继续配本地 MySQL
 ```
+
+## 4.5 询价线 Codex 化（拍板：开放给运营，无 LLM 代理）
+
+新分工：**服务器只做哑管道**（收/存/转发消息，不做任何智能处理），**Codex 是提取与归属的
+大脑**，fba-docs 是纯记账。
+
+| # | 事项 | 量 |
+|---|---|---|
+| I.1 | fba-docs 新增**结构化报价提交端点** `POST /api/inquiries/{id}/quotes`：body={forwarder_id, currency, customs_fee_monthly?, lines:[{fc,price,unit,channel?,eta_days?,...}], raw_ref}——复用现成 `_persist_quote` 按 FC upsert；Codex 读原文/看图提取后直接提交，绕过内置 LLM | 0.5天 |
+| I.2 | fba-docs qiwe_client 改调 mcapi 代理（发送）；新增中继拉取导入：把 relay 消息落本地 ForwarderMessage 走现有归属管道（规则归属保留：引用/单开放询价/ref_code；LLM 归属降级由 Codex 人工 assign 接手） | 0.5-1天 |
+| I.3 | **图片链路四缺口**（2026-07-27 核实：现状图片消息在入口被整条丢弃，从未落库）：① forwarder_service 无正文事件也落 raw（最致命，改 1 行判断）；② **真实样本探针**——改完①让货代发一张真图，看 raw 里是 base64RawData 还是要另查 qiweapi 媒体下载接口（qiwe_client 现无此封装，method 名未知），**方案在样本后才能定**；③ 图片落地目录约定+写 media JSON+消息流水接口带 media；④ msg_type 数字码归一成 text/image/file | ①10分钟+②探针+③④0.5-1天 |
+| I.4 | AGENTS.md 询价章：Codex 提取**必须带确认门**——向运营复述"原文/图 + 提取出的结构化行"，确认后才 POST /quotes（提错价→比价错→选错货代，责任已从系统 LLM 转移到 Codex）；归属歧义（同群多品牌）走 pending+人工指认，Codex 不猜 | 并入 2.5 |
 
 ## 5. Phase 2——本地化适配（fba-docs 侧）
 
@@ -109,15 +121,20 @@ OPERATOR_NAME=<运营名>
 
 | # | 问题 | 建议 |
 |---|---|---|
-| 8.1 | 询价线开放给运营吗 | 开放=做 1.6 LLM 代理+1.7 消息中继（+2天）；不开放=询价留在服务器 worker/管理员，运营端只读比价结果（省 2 天，可后补） |
+| 8.1 | ~~询价线开放~~ **已拍板：开放 + 无 LLM 代理（Codex 承担提取）**，见 §4.5 | — |
 | 8.2 | 占坑 fail-closed 策略确认 | 服务器不可达时禁止建仓/下单类写操作（防脱网双开）；紧急时管理员可在本地实例设 `CHECKPOINT_BYPASS=1` 兜底 |
 | 8.3 | 初始化包分发形式 | 内网共享目录（推荐）/U盘；是否加密看内网信任度 |
 | 8.4 | 老机器（用户本机 MySQL 数据）迁移 | 用户本机保持 MySQL 不动（DB_URL 显式配）；或导出进初始化包给新机 |
+| 8.5 | 中继消息保留策略 | 货代回复原文（含报价）在服务器暂存多久？建议拉取确认后保留 30 天自动清理，拉取动作入审计（追溯靠节点+审计，不靠原文长存） |
+| 8.6 | 同群多品牌归属歧义（多运营放大） | 中继按 room 拉，同一条报价可能被两个运营各自认领到不同询价。约定：Codex 只在消息上下文明确时归属，含糊一律 pending 人工指认；长期解=每品牌独立货代群 |
+| 8.7 | AI 映射（模板登记）也交 Codex？ | 建议是：Codex 读模板 xlsx 直接产 mapping JSON 调 CRUD 登记，ai_mapping.py 留降级——这样 ANTHROPIC key 彻底退役 |
 
 ## 9. 实施顺序与总量
 
 ```
-Phase 0（~2天）→ Phase 1（~3-4天，含协调层）→ Phase 2（~3-4天）→ Phase 3 部署+内测1周
+Phase 0（~2天）→ Phase 1（~3-4天，含协调层+消息中继）→ §4.5 询价 Codex 化（~2天，图片链路视探针结论）
+→ Phase 2（~3-4天）→ Phase 3 部署+内测1周
 ```
-开发总量约 **8-10 个工作日**（比 v1 中央库方案少且风险更低）。
-硬顺序约束：0.2/0.3（mcapi 鉴权）先于一切局域网暴露；1.4/1.5（占坑）先于第二个运营接入。
+开发总量约 **9-11 个工作日**。
+硬顺序约束：0.2/0.3（mcapi 鉴权）先于一切局域网暴露；1.4/1.5（占坑）先于第二个运营接入；
+图片链路的 I.3-①（无正文事件落 raw）应尽早合入以便攒真实样本。
