@@ -42,14 +42,18 @@
 | 归属模型（owner 字段+权限） | **降级**——本地库天然隔离；服务器节点登记自带 operator |
 | 双运营重复建仓/重复下单（原方案中央库原子占坑） | **改为服务器"关键节点占坑"**（§4.2）——本地库隔离反而让重复风险更隐蔽，必须由服务器唯一登记拦截 |
 
-## 3. Phase 0——安全硬前置（不变，先做）
+## 3. Phase 0——安全硬前置（✅ 全部完成 2026-07-27）
 
-| # | 事项 | 量 |
+| # | 事项 | 状态 |
 |---|---|---|
-| 0.1 | 作废 fbadocs-zane 隧道子域名；tunnel_keepalive.py 整删 | 即刻 |
-| 0.2 | mcapi X-API-Key 鉴权（key→运营名，ContextVar 仿 store_context 模式；回调/OAuth/health 豁免清单） | 0.5-1天 |
-| 0.3 | mcapi 危险接口 403（DENY 表：amazon_fba cancel、各平台 DELETE/cancel/refund；operator key 全禁，admin key 留用户本人） | 0.5天 |
-| 0.4 | 透传口管控：/sellfox/call 改**白名单**只放行 fba-docs 实际用的 14 个 path（cancel.json 单独 admin+审计）；/etsy/call 同理 | 0.25天 |
+| 0.1 | 作废 fbadocs-zane 隧道子域名；tunnel_keepalive.py 整删 | ✅ 进程已停（keepalive+gradio）、自启 bat 已删、脚本 git rm（fba-docs 9178144）。判断依据：入站消息停在 07-13，webhook 链路早已断，无在途消息可丢 |
+| 0.2 | mcapi X-API-Key 鉴权（API_KEYS_JSON: key→{name,role}，**未配置=不启用**保单机兼容；回调/OAuth 豁免清单） | ✅ mcapi 0a601db（app/core/auth.py），11 项测试矩阵全过 |
+| 0.3 | mcapi 危险接口 403：非 admin 一切 DELETE 整类拦截 + cancel/close/refund/archive/kill-switch 显式清单 | ✅ 同上 |
+| 0.4 | 透传口管控：/sellfox/call 按 15 path 白名单（cancel.json 仅 admin，可配 SELLFOX_OPERATOR_PATHS_EXTRA 扩展）；/etsy/call 仅 admin | ✅ 同上 |
+
+顺带完成：fba-docs 侧 mcapi 调用已支持带 `MCAPI_KEY` 请求头（未配不带，双向兼容）；
+富媒体消息落 raw 已合入（I.3-①，开始攒图片样本）。
+**启用开关**：服务器 mcapi .env 配 `API_KEYS_JSON` 并重启即生效；fba-docs 侧配 `MCAPI_KEY`。
 
 红线技术化：运营 key 在服务端就调不到任何取消/删除接口，Codex 想绕也绕不过。
 
