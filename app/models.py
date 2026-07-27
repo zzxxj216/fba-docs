@@ -429,3 +429,22 @@ class GeneratedDoc(Base):
     created_at = Column(DateTime, default=datetime.now)
 
     template = relationship("Template")
+
+
+class Operator(Base):
+    """运营人员 ↔ 管辖店铺/品牌 映射（自飞书线迁入，渠道中立）。
+
+    空 scope = 全部（管理员）。feishu_* 列为历史遗留字段，保留兼容旧数据。
+    """
+    __tablename__ = "feishu_operators"   # 保留原表名以沿用既有数据
+    id = Column(Integer, primary_key=True)
+    name = Column(String(64), default="")
+    feishu_open_id = Column(String(64), default="", index=True)
+    feishu_user_id = Column(String(64), default="", index=True)
+    feishu_union_id = Column(String(64), default="")
+    scope_brand_ids = Column(Text)        # JSON list[int]，管的品牌 id
+    scope_shop_names = Column(Text)       # JSON list[str]，管的赛狐店铺名
+    is_admin = Column(Boolean, default=False)
+    active = Column(Boolean, default=True)
+    remark = Column(Text)
+    created_at = Column(DateTime, default=datetime.now)

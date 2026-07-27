@@ -24,7 +24,7 @@ def test_start_inquiry_builds_lanes_and_refcode(db, monkeypatch):
     assert inq.ref_code.startswith("INQ-HU")
     lanes = json.loads(inq.lanes_snapshot)
     assert {l["fc"] for l in lanes} == {"ONT8", "LAX9"}
-    assert inq.ref_code in inq.content          # 暗号埋进正文
+    assert inq.ref_code not in inq.content      # 正文不带暗号/编号（2026-07-07 拍板）
     assert "ONT8" in inq.content
     ids = json.loads(inq.target_forwarder_ids)
     assert len(ids) == 1

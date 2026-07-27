@@ -182,6 +182,9 @@ def send_inquiry(db, inquiry_id):
                             "sent": False, "error": str(e)})
     if any(r["sent"] for r in results):
         inq.status = "收集中"
+        # 状态迁移（自飞书线迁入）：发出询价的批次标"询价中"，防重复整包再询
+        if b is not None and b.status in ("", "已建仓", "已同步", "数据准备"):
+            b.status = "询价中"
         db.commit()
     return {"inquiry_id": inq.id, "status": inq.status, "results": results}
 
@@ -396,94 +399,6 @@ def _post_extract(db, inquiry_id, forwarder_id, quote):
                 inquiry_id=inquiry_id)
         except Exception:
             pass
-    if fwd:
-        _notify_operator_quote(db, inq, fwd, total, currency or quote.currency,
-                               len(got), len(want), missing)
-
-
-def _notify_operator_quote(db, inq, fwd, total, currency, covered, want_n, missing):
-    """货代回价后，通知管该店铺的运营（飞书私信）：覆盖/整包总价/缺仓。"""
-    try:
-        from ..feishu_models import Operator
-        from .. import feishu_client as fc
-        import json as _json
-    except Exception:
-        return
-    b = db.get(Batch, inq.batch_id) if inq else None
-    if not b:
-        return
-    target = None
-    for o in db.query(Operator).all():
-        try:
-            sids = _json.loads(o.scope_brand_ids or "[]")
-        except (ValueError, TypeError):
-            sids = []
-        if o.is_admin or (b.brand_id in sids):
-            target = o
-            break
-    if not target or not target.feishu_open_id:
-        return
-    msg = (f"💰 {fwd.name} 回价：覆盖 {covered}/{want_n} 个仓"
-           + (f"，整包约 {total} {currency}" if total is not None else "")
-           + (f"；还缺 {('、'.join(missing))}（已自动提醒货代补报）" if missing
-              else "；已报全 👇 直接按批次选货代"))
-    try:
-        fc.send_text(target.feishu_open_id, msg, receive_id_type="open_id")
-    except Exception:
-        pass
-    # 仅当"本周所有整包询价都报全"时，才主动把按批次比价卡推给运营（不用手动发「比价」）
-    if not missing and _weekly_all_complete(db, target):
-        try:
-            from ..feishu import service as fsvc, cards as fcards
-            comp = (fsvc.weekly_comparison_from_db(db, target) or {}).get("comparison") or []
-            if comp:
-                fc.send_text(target.feishu_open_id, "✅ 本周所有询价都报全了，这是按批次比价，请逐批选货代：",
-                             receive_id_type="open_id")
-                fc.send_card(target.feishu_open_id, fcards.weekly_comparison_card(comp),
-                             receive_id_type="open_id")
-        except Exception:
-            pass
-
-
-def _weekly_all_complete(db, target_op):
-    """该运营本周所有整包询价是否都已报全（每条询价至少有一家货代覆盖其全部仓）。"""
-    import json as _json
-    from datetime import datetime, timedelta
-    now = datetime.now()
-    ws = (now - timedelta(days=now.weekday())).replace(hour=0, minute=0, second=0, microsecond=0)
-    try:
-        sids = _json.loads(target_op.scope_brand_ids or "[]")
-    except (ValueError, TypeError):
-        sids = []
-    inqs = []
-    for cand in db.query(Inquiry).filter(Inquiry.created_at >= ws).all():
-        try:
-            st = _json.loads(cand.structured or "{}")
-        except (ValueError, TypeError):
-            st = {}
-        if not st.get("weekly"):
-            continue
-        if not target_op.is_admin:
-            b = db.get(Batch, cand.batch_id)
-            if not sids or (b and b.brand_id not in sids):
-                continue
-        inqs.append(cand)
-    if not inqs:
-        return False
-    for inq in inqs:
-        lanes = _jload(inq.lanes_snapshot, [])
-        want = {(l.get("fc") or "").upper() for l in lanes if l.get("fc")}
-        done = False
-        for q in db.query(InquiryQuote).filter(InquiryQuote.inquiry_id == inq.id).all():
-            got = {(ln.fc or "").upper() for ln in q.lines if (ln.fc or "") and ln.price is not None}
-            flat = any((ln.fc or "").upper() in ("", "ALL") and ln.price is not None for ln in q.lines)
-            if flat or want <= got:
-                done = True
-                break
-        if not done:
-            return False
-    return True
-
 
 # ---------------------------------------------------------------- 提取 → QuoteLine
 

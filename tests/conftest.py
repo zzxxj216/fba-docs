@@ -1,9 +1,6 @@
-"""测试夹具：用 SQLite 内存库（不污染共享 MySQL fba_docs），覆盖询价线 + 飞书线。
+"""测试夹具：用 SQLite 内存库（不污染共享业务库），覆盖询价线等。
 
 - 导入 app.database 前把 DB_URL 指向 SQLite，避免连真实 MySQL。
-- FEISHU_INQUIRY_STUB=1：飞书线接缝走 stub，可独立测。
-- 注册 models + feishu_models 全部表到 Base，函数级建表/丢表。
-- db 夹具顺带把 feishu_client.configured() 打成 False：测试不发真实飞书网络。
 - LLM/企微默认不接通；要测智能逻辑就 monkeypatch llm_client。
 """
 
@@ -12,15 +9,13 @@ import sys
 
 # 必须在导入 app.database 之前设置，避免 import 时连 MySQL。
 os.environ["DB_URL"] = "sqlite+pysqlite:///:memory:"
-os.environ["FEISHU_INQUIRY_STUB"] = "1"
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
-from app import models  # noqa: E402  触发询价/主数据表注册到 Base
-from app import feishu_models  # noqa: E402,F401  触发飞书线表（Operator/FeishuSession）
+from app import models  # noqa: E402  触发全部表注册到 Base
 from app.database import Base  # noqa: E402
 
 
@@ -32,12 +27,6 @@ def db(monkeypatch):
     Base.metadata.create_all(bind=engine)
     Session = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)
     session = Session()
-    # 飞书未必接通：默认让卡片"发送"成为 no-op，测试不发真实网络。
-    try:
-        from app import feishu_client as fc
-        monkeypatch.setattr(fc, "configured", lambda: False)
-    except Exception:
-        pass
     try:
         yield session
     finally:

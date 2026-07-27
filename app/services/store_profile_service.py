@@ -88,7 +88,7 @@ def check_store(db, brand, *, probe_amazon=True):
 
     # 8) 运营覆盖
     try:
-        from ..feishu_models import Operator
+        from ..models import Operator
         covered = any(o.is_admin or brand.id in json.loads(o.scope_brand_ids or "[]")
                       for o in db.query(Operator).all())
         checks.append(("运营覆盖", covered, "有人管" if covered else "没有运营的 scope 包含该品牌"))
