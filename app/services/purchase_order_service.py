@@ -410,6 +410,10 @@ def create_purchase_order(db, plan_group_no, action="0", dry_run=True, force=Fal
                 f"赛狐已有关联此采购计划的采购单 {','.join(dup)}（未取消），"
                 f"重复生成会建出重复单。请先作废这些单，或勾选「强制生成」。")
 
+    # 占坑：防两运营对同一采购计划重复建真实赛狐采购单（多本地库互不可见，服务器唯一登记）
+    from .. import coord_client as coord
+    coord.claim(f"po:{plan_group_no}", node="po")
+
     resp = sf.call(CREATE_PO_PATH, body)
     purchase_no = _extract_purchase_no(resp)
 
@@ -429,6 +433,8 @@ def create_purchase_order(db, plan_group_no, action="0", dry_run=True, force=Fal
     rec.po_created_at = datetime.now()
     db.commit()
 
+    coord.report(f"po:{plan_group_no}", node="po",
+                 refs={"purchase_no": purchase_no, "action": str(action)})
     result = {"purchase_no": purchase_no, "sellfox_resp": resp, "body": body, "status": rec.status}
     # 一步到底：action=2 已下单(待到货)，再按采购量全部良品自动到货 → 已完成
     if auto_arrival and str(action) == "2" and purchase_no:

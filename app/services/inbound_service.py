@@ -17,6 +17,7 @@ import re
 from openpyxl import load_workbook
 
 from .. import amazon_fba_client as fba
+from .. import coord_client as coord
 from ..models import Brand, InboundPlan, Product
 
 CM_PER_IN = 2.54
@@ -679,6 +680,10 @@ def build_for_batch(db, batch):
     # wait_operation FAILED，如效期)。故 create+wait 一起放进重试：据错误把 SKU 的
     # labelOwner/prepOwner 改 NONE、或补效期(今天+1月)，再重试。
     # 重试留下的草稿计划不自动取消（红线），累积进 draft_pids 并入最终报错供人工清理。
+    # 占坑：多运营本地库互不可见，靠服务器唯一登记防同一采购计划被两人重复建仓
+    # （重复建出的真实亚马逊计划不能自动取消，只能人工清）。未配 MCAPI_KEY 时跳过。
+    build_scope = f"build:{batch.purchase_plan_no or batch.name}"
+    coord.claim(build_scope, node="build")
     resp = None
     last_err = ""
     draft_pids = []
@@ -832,6 +837,8 @@ def build_for_batch(db, batch):
     batch.placement_options = json.dumps(out, ensure_ascii=False)
     batch.status = "已建仓"          # 建仓出分仓方案 → 标记已建仓（进度卡据此给按钮）
     db.commit()
+    coord.report(build_scope, node="build",
+                 refs={"inbound_plan_id": pid, "option_count": len(out)})
     return {"inbound_plan_id": pid, "option_count": len(out)}
 
 
@@ -912,6 +919,8 @@ def confirm_placement_for_batch(db, batch, placement_option_id, *, live=False):
         plan["dry_run"] = True
         return plan                       # 🛑 演练：到此为止，不碰亚马逊
     # ===== 真实写亚马逊：每步幂等（已做过则忽略"already/cannot be processed"继续）=====
+    # 占坑：防两运营对同一入库计划并发确认分仓/配运输
+    coord.claim(f"placement:{pid}", node="placement")
     # 1) 确认分仓方案（已确认则跳过）
     try:
         c = fba.call("POST", f"/inbound-plans/{pid}/placement-options/{placement_option_id}/confirm",
@@ -933,6 +942,8 @@ def confirm_placement_for_batch(db, batch, placement_option_id, *, live=False):
     ships = _backfill_shipments(batch, pid, shipment_ids, store, db=db)
     batch.status = "运输已配置"
     db.commit()
+    coord.report(f"placement:{pid}", node="placement",
+                 refs={"shipment_ids": shipment_ids, "fcs": fcs})
     plan.update({"dry_run": False, "shipments": ships})
     return plan
 

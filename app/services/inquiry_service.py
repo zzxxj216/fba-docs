@@ -164,6 +164,12 @@ def send_inquiry(db, inquiry_id):
     if not forwarders:
         raise ValueError("本次询价没有目标货代（检查品牌货代绑定）")
 
+    # 占坑：防两运营对同一批次重复外发询价（骚扰货代）；同人重发幂等放行
+    from .. import coord_client as coord
+    b = db.get(Batch, inq.batch_id) if inq.batch_id else None
+    inq_scope = f"inqsend:{(b.purchase_plan_no or b.name) if b else inq.ref_code}"
+    coord.claim(inq_scope, node="inqsend", refs={"ref_code": inq.ref_code})
+
     results = []
     for f in forwarders:
         try:

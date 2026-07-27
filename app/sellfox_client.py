@@ -95,8 +95,59 @@ def _sign(params, secret):
     return hmac.new(secret.encode(), data.encode(), hashlib.sha256).hexdigest()
 
 
+_MODE = None
+
+
+def _mode():
+    """direct=本机持凭据直连赛狐（现状/服务器 worker）；proxy=经 mcapi 网关代理
+    （运营端无密钥，签名/token/全局限流在服务器）。
+
+    SELLFOX_MODE 显式指定优先；未指定时自动判：本地有凭据→direct，没有→proxy。"""
+    global _MODE
+    if _MODE is None:
+        from .amazon_fba_client import _env_val
+        explicit = (_env_val("SELLFOX_MODE") or "").strip().lower()
+        if explicit in ("direct", "proxy"):
+            _MODE = explicit
+        else:
+            try:
+                _credentials()
+                _MODE = "direct"
+            except RuntimeError:
+                _MODE = "proxy"
+    return _MODE
+
+
+def _call_proxy(path, body):
+    """经 mcapi POST /api/v1/sellfox/call 透传（带运营 X-API-Key）。
+
+    服务器侧已做：签名/token 单点/全局 1.1s 限流/40001+40019 重试/path 白名单
+    （cancel 类仅 admin，operator 会收到 403——按红线只报告等人工）。"""
+    from .amazon_fba_client import _base, _key
+    headers = {"X-API-Key": _key()} if _key() else None
+    try:
+        r = httpx.post(f"{_base()}/api/v1/sellfox/call",
+                       json={"path": path, "body": body or {}},
+                       headers=headers, timeout=90)
+    except httpx.HTTPError as e:
+        raise RuntimeError(f"赛狐代理(mcapi)连接失败：{e}（确认服务器 mcapi 在运行）")
+    try:
+        res = r.json()
+    except ValueError:
+        raise RuntimeError(f"赛狐代理 {path} 返回非 JSON：HTTP {r.status_code} {r.text[:200]}")
+    if r.status_code >= 400 or (isinstance(res, dict) and res.get("success") is False):
+        msg = (res.get("message") or "") if isinstance(res, dict) else ""
+        detail = (res.get("detail") or "") if isinstance(res, dict) else r.text[:300]
+        raise RuntimeError(f"赛狐接口 {path} 失败：{msg} {str(detail)[:300]}")
+    return res.get("data") if isinstance(res, dict) else res
+
+
 def call(path, body=None, _retried_token=False, _retried_limit=False):
-    """POST 调用赛狐接口，返回 res['data']；非 0 code 抛 RuntimeError。"""
+    """POST 调用赛狐接口，返回 res['data']；非 0 code 抛 RuntimeError。
+
+    proxy 模式（运营端）整体走 mcapi 网关；direct 模式走本机凭据（原逻辑不变）。"""
+    if _mode() == "proxy":
+        return _call_proxy(path, body)
     cid, sec = _credentials()
     token = get_token()
     sign_params = {
