@@ -61,9 +61,29 @@ def default_guid():
     return _env("QIWE_GUID")
 
 
+def _proxy_enabled():
+    """运营端形态：本地无 QIWE_TOKEN 但配了 MCAPI_KEY → 发送/查群经 mcapi 代理。"""
+    from .amazon_fba_client import _key
+    return not _token() and bool(_key())
+
+
+def _proxy_call(method, path, **kw):
+    from .amazon_fba_client import _base, _key
+    r = httpx.request(method, f"{_base()}{path}",
+                      headers={"X-API-Key": _key()}, timeout=60, **kw)
+    try:
+        res = r.json()
+    except ValueError:
+        raise RuntimeError(f"企微代理 {path} 返回非 JSON：HTTP {r.status_code}")
+    if r.status_code >= 400 or (isinstance(res, dict) and res.get("success") is False):
+        msg = res.get("message") if isinstance(res, dict) else r.text[:200]
+        raise RuntimeError(f"企微代理 {path} 失败：{msg}")
+    return res.get("data") if isinstance(res, dict) else res
+
+
 def configured():
-    """token 是否就绪——上层据此决定是否提示"渠道未接通"，避免直接报错。"""
-    return bool(_token())
+    """token 就绪或代理可用——上层据此决定是否提示"渠道未接通"。"""
+    return bool(_token()) or _proxy_enabled()
 
 
 def _throttle():
@@ -111,6 +131,10 @@ def send_text(to_id, content, guid=None, no_read=False):
 
     guid 缺省取 QIWE_GUID。返回含 msgServerId（撤回用）/timestamp 等。
     """
+    if _proxy_enabled():
+        return _proxy_call("POST", "/api/v1/qiwe/send",
+                           json={"to_id": to_id, "content": content,
+                                 "no_read": bool(no_read)})
     guid = guid or default_guid()
     if not guid:
         raise RuntimeError("缺少实例 guid（配 QIWE_GUID 或显式传入）")
@@ -122,6 +146,8 @@ def send_text(to_id, content, guid=None, no_read=False):
 
 def list_rooms(guid=None):
     """群列表（roomId/roomName/群主/成员数）。配货代群绑定时取 roomId 用。"""
+    if _proxy_enabled():
+        return _proxy_call("GET", "/api/v1/qiwe/rooms") or []
     guid = guid or default_guid()
     if not guid:
         raise RuntimeError("缺少实例 guid（配 QIWE_GUID 或显式传入）")

@@ -152,6 +152,23 @@ def assign(msg_id: int, data: dict, db: Session = Depends(get_db)):
         raise HTTPException(404, str(e))
 
 
+@router.post("/inquiries/{inquiry_id}/quotes")
+def submit_quotes(inquiry_id: int, data: dict, db: Session = Depends(get_db)):
+    """结构化报价提交（Codex 提取后直接落库，绕过内置 LLM/正则；按 FC 增量合并）。
+
+    body {forwarder_id, lines:[{fc,price,unit?,channel?,eta_days?,cutoff?,min_charge?,
+    remark?}], currency?, customs_fee_monthly?, raw_ref?}。返回含 missing 缺仓清单，
+    不自动外发催报。"""
+    data = data or {}
+    fid = data.get("forwarder_id")
+    if not fid:
+        raise HTTPException(400, "缺少 forwarder_id")
+    try:
+        return inq_svc.submit_structured_quote(db, inquiry_id, int(fid), data)
+    except ValueError as e:
+        raise HTTPException(404 if "不存在" in str(e) else 400, str(e))
+
+
 @router.get("/inquiries/messages/pending")
 def pending_messages(db: Session = Depends(get_db)):
     """待人工归属的消息（attribution_status=pending）。"""

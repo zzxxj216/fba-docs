@@ -28,3 +28,16 @@ tools/*.exe
 # 临时调试脚本
 /_*.py
 tools/_*.py
+
+# 敏感业务资料：随本地初始化包(seed_pkg)离线分发，不入库（OPENSOURCE_PLAN §5）
+docs/doc_rules/
+PURCHASE_ORDER_API.md
+ACCEPTANCE_REPORT2.md
+P2_DIFF_REPORT.md
+_accept2_notes.md
+ScreenShot_*.png
+/托书*.png
+/主流程*.png
+seed_pkg*.zip
+fba_docs.db
+CLAUDE.local.md

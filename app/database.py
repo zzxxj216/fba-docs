@@ -12,10 +12,8 @@ OUTPUT_DIR = os.path.join(BASE_DIR, "output")
 os.makedirs(TEMPLATE_STORE, exist_ok=True)
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
-DB_URL = os.getenv(
-    "DB_URL",
-    "mysql+pymysql://root:123456@127.0.0.1:3306/fba_docs?charset=utf8mb4",
-)
+# 缺省 = 本地 SQLite（运营端零安装）；管理员/老机器在 .env 显式配 MySQL DSN
+DB_URL = os.getenv("DB_URL") or f"sqlite:///{os.path.join(BASE_DIR, 'fba_docs.db')}"
 
 
 def _ensure_database():

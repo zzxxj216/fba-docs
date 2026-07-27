@@ -2,7 +2,7 @@
 
 import os
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
@@ -128,3 +128,26 @@ def delete_doc(doc_id: int, db: Session = Depends(get_db)):
 def seed_init(db: Session = Depends(get_db)):
     """初始化：规则默认值种子 + 工厂信息库.xlsx 导入（import_service 就绪时）。"""
     return seed.run_seed(db)
+
+
+@router.post("/seed/export-pkg")
+def seed_export_pkg(db: Session = Depends(get_db)):
+    """管理员导出本地初始化包 seed_pkg.zip（档案/规则/doc_rules/模板，离线分发勿进 git）。"""
+    return seed.export_pkg(db)
+
+
+@router.post("/seed/import-pkg")
+async def seed_import_pkg(file: UploadFile = File(...), db: Session = Depends(get_db)):
+    """运营端导入初始化包（clone 后一次性执行；merge upsert 幂等可重导）。"""
+    import tempfile
+    data = await file.read()
+    with tempfile.NamedTemporaryFile(suffix=".zip", delete=False) as f:
+        f.write(data)
+        tmp = f.name
+    try:
+        return seed.import_pkg(db, tmp)
+    finally:
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass

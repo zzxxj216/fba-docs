@@ -12,7 +12,7 @@ python -m uvicorn app.main:app --port 8000   # 或双击 start.bat
 
 ## 数据库
 
-MySQL（本地）：`mysql+pymysql://root:123456@127.0.0.1:3306/fba_docs?charset=utf8mb4`
+默认本地 SQLite（`fba_docs.db`，运营端零安装）；MySQL 经 `.env` 的 `DB_URL` 配置（本机 DSN 见 CLAUDE.local.md）
 - 库名 `fba_docs`，启动时自动建库建表（`app/database.py`）
 - 连接参数在 `.env`（`DB_URL` 可覆盖默认值）
 
@@ -41,9 +41,8 @@ output/{批次}/    生成文件归档
 - 品牌是绑定主键：品牌 → 默认工厂 + 店铺主体；外贸主体=杭州星盟(SA)
 - 编号：货件级 `[SA-]{brand2}-{fc}-{date}`、采购合同 `[SA-]{brand2}-{country}-{date}`，SA前缀=经星盟二级链路
 - 采购合同两级：工厂→店铺(×1.13) 和 店铺→星盟(×1.13×1.1)
-- 历史案例（验收基准）：`C:\Users\zane\Downloads\Serenorch-US-6.5\`（源数据+模板+RPA成品）
-- 旧 RPA 源码（规则出处）：`C:\Users\zane\AppData\Local\ShadowBot\users\831334371139649536\apps\`（1c268d8a=跨运通, ffb2c539=盈和）
-- 工厂/主体初始化数据：`F:\聊天记录\店铺主体-工厂信息库.xlsx`
+- 历史案例/RPA 源码/初始化数据等本机路径见 `CLAUDE.local.md`（gitignore 不入库）
+- 敏感业务资料（doc_rules/采购单API文档/验收报告）已解除 git 跟踪，随 seed_pkg 离线分发
 
 ## AI 映射助手
 

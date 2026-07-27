@@ -487,6 +487,33 @@ def _weekly_all_complete(db, target_op):
 
 # ---------------------------------------------------------------- 提取 → QuoteLine
 
+def submit_structured_quote(db, inquiry_id, forwarder_id, payload):
+    """结构化报价提交（Codex 在运营端提取后直接落库，绕过内置 LLM/正则）。
+
+    payload: {lines:[{fc,price,unit?,channel?,eta_days?,cutoff?,min_charge?,remark?,currency?}],
+              currency?, customs_fee_monthly?, raw_ref?(原文引用，留档)}。
+    返回 {quote_id, lines, missing}——missing=询价 lanes 里还没报价的 FC，
+    **不自动外发催报**（追问由用户在对话里确认后另发）。"""
+    inq = db.get(Inquiry, inquiry_id)
+    if inq is None:
+        raise ValueError(f"询价不存在：{inquiry_id}")
+    if db.get(Forwarder, forwarder_id) is None:
+        raise ValueError(f"货代不存在：{forwarder_id}")
+    lines = payload.get("lines") or []
+    if not lines:
+        raise ValueError("缺少报价行 lines")
+    extracted = {"lines": lines, "currency": payload.get("currency"),
+                 "customs_fee_monthly": payload.get("customs_fee_monthly"),
+                 "confidence": 1.0, "source_type": "manual"}
+    quote = _persist_quote(db, inquiry_id, forwarder_id, extracted,
+                           raw_message=(payload.get("raw_ref") or "")[:2000])
+    lane_fcs = {(l.get("fc") or "").upper() for l in (_jload(inq.lanes_snapshot, []) or [])}
+    quoted = {(ln.fc or "").upper() for ln in quote.lines if ln.price is not None}
+    return {"quote_id": quote.id,
+            "lines": [{"fc": ln.fc, "price": ln.price, "unit": ln.unit} for ln in quote.lines],
+            "missing": sorted(lane_fcs - quoted - {""})}
+
+
 def _persist_quote(db, inquiry_id, forwarder_id, extracted, raw_message="",
                    raw_image_path=""):
     """提取结果 dict → InquiryQuote + QuoteLine[]。**按仓合并(upsert)**：保留旧仓、更新/新增

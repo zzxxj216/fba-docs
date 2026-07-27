@@ -51,6 +51,50 @@ async def qiwe_callback(request: Request, db: Session = Depends(get_db)):
     return {"code": 0, **res}
 
 
+@router.post("/qiwe/pull-relay")
+def qiwe_pull_relay(db: Session = Depends(get_db)):
+    """从 mcapi 中继拉取新消息导入本地（运营端形态，需 MCAPI_KEY）。
+
+    原样事件走既有 record_incoming 管道（qiwe_msg_id 幂等去重 + 归属），
+    游标存 output/_relay_cursor.json。"""
+    import json as _json
+    import os
+
+    import httpx
+
+    from ..amazon_fba_client import _base, _key
+    from ..database import OUTPUT_DIR
+    if not _key():
+        raise HTTPException(400, "未配置 MCAPI_KEY（中继拉取是新架构运营端功能）")
+    cur_path = os.path.join(OUTPUT_DIR, "_relay_cursor.json")
+    since = 0
+    try:
+        with open(cur_path, encoding="utf-8") as f:
+            since = int((_json.load(f) or {}).get("since_id") or 0)
+    except (OSError, ValueError):
+        pass
+    try:
+        r = httpx.get(f"{_base()}/api/v1/qiwe/relay/messages",
+                      params={"since_id": since, "limit": 200},
+                      headers={"X-API-Key": _key()}, timeout=60)
+        rows = ((r.json() or {}).get("data") or []) if r.status_code < 400 else None
+        if rows is None:
+            raise HTTPException(502, f"中继拉取失败 HTTP {r.status_code}: {r.text[:200]}")
+    except httpx.HTTPError as e:
+        raise HTTPException(502, f"中继(mcapi)不可达：{e}")
+    events = []
+    for m in rows:
+        try:
+            events.append(_json.loads(m.get("raw") or "{}"))
+        except ValueError:
+            continue
+    res = inquiry_service.record_incoming(db, {"data": events}) if events else {"count": 0}
+    if rows:
+        with open(cur_path, "w", encoding="utf-8") as f:
+            _json.dump({"since_id": max(m["id"] for m in rows)}, f)
+    return {"pulled": len(rows), "since_id": since, **res}
+
+
 @router.post("/qiwe/send-test")
 def qiwe_send_test(data: dict, db: Session = Depends(get_db)):
     """手动测试发送：body {forwarder_id, content}。阶段0 验证管道用。"""

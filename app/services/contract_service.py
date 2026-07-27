@@ -19,12 +19,9 @@ from .. import rule_engine
 from ..excel_engine import _copy_row_style
 from ..models import Batch, Brand, Company, Factory, GeneratedDoc, Product
 
-TEMPLATE = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))),
-                        "amazon", "templates_store", "采购合同-两级公用模板.xlsx")
-if not os.path.exists(TEMPLATE):     # 兼容不同部署根
-    TEMPLATE = r"D:\amazon\templates_store\采购合同-两级公用模板.xlsx"
+from ..database import OUTPUT_DIR, TEMPLATE_STORE
 
-OUTPUT_DIR = os.path.join(r"D:\amazon", "output")
+TEMPLATE = os.path.join(TEMPLATE_STORE, "采购合同-两级公用模板.xlsx")
 
 # 模板固定坐标（与样本一致）
 DETAIL_START = 17          # 明细首行
