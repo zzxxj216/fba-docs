@@ -27,7 +27,7 @@ def generate(batch_id: int, body: GenerateIn, db: Session = Depends(get_db)):
 
 @router.post("/batches/{batch_id}/contracts")
 def generate_contracts(batch_id: int, data: dict = None, db: Session = Depends(get_db)):
-    """生成两级采购合同（朗格系两份：工厂→店铺、店铺→星盟；其它店一份，系数走 RuleConfig）。
+    """生成两级采购合同（链条系两份：工厂→店铺、店铺→外贸主体；其它店一份，系数走 RuleConfig）。
 
     body: {persist: bool=true}——persist=false 只写文件不落 GeneratedDoc 记录（试跑用）。
     文件写入 output/{批次名-MMDD}/采购合同/，同名静默覆盖。

@@ -1,7 +1,7 @@
 """种子数据：RuleConfig 规则默认值 + 主体/品牌初始化导入。
 
 规则种子幂等：已存在的 (key, scope='global') 不覆盖（用户改过的值保留）。
-品牌工厂导入依赖 Agent A 的 import_service（F:\\聊天记录\\店铺主体-工厂信息库.xlsx），
+品牌工厂导入依赖 import_service（xlsx 路径由 SEED_BRAND_XLSX 配置），
 未就绪时只做规则种子并在响应里说明。
 """
 
@@ -10,7 +10,7 @@ import os
 from .models import RuleConfig
 from .rule_engine import DEFAULT_RULES
 
-BRAND_FILE = r"F:\聊天记录\店铺主体-工厂信息库.xlsx"
+BRAND_FILE = os.getenv("SEED_BRAND_XLSX", "")   # 初始化xlsx路径(管理员本机.env配,公开仓无默认)
 
 
 def seed_rules(db):

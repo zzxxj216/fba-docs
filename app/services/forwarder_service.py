@@ -41,7 +41,7 @@ def channel_status():
 def _match_forwarder(db, sender_id, room_id):
     """按企微来源匹配货代：优先群 room_id，其次外部联系人 id。匹配不到返回 None。
 
-    同一群可能绑多条货代记录（多品牌共用一个货代群，如朗格群绑 Zentop/Byane/RazEdg）——
+    同一群可能绑多条货代记录（多品牌共用一个货代群，如链条厂群绑 Zentop/Byane/RazEdg）——
     优先取**有进行中询价(收集中)**的那条，否则取第一条，避免消息归到没询价的兄弟记录上。
     """
     q = db.query(Forwarder)

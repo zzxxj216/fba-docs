@@ -33,7 +33,7 @@
    "已完成"是采购单终态。实时状态以 `GET /api/purchase/confirm/{pgn}` 的 po_status_label 为准。
 3. 门1 工厂确认（用户明示后）`POST /api/purchase/confirm {plan_group_no, items, confirmed_by}`。
 4. 门2 建单：先 `POST /api/purchase/create-order {plan_group_no, dry_run:true}` 预览复述
-   仓库/供应商/单价（供应商空或仓库=默认56115 → 先补品牌档案）；确认后 dry_run:false，
+   仓库/供应商/单价（供应商空或仓库落默认兜底仓 → 先补品牌档案）；确认后 dry_run:false，
    action "1"=提交 "2"=提交并下单；auto_arrival 默认 false（虚增库存风险，单独确认）。
    防重报错→报告已有单号，禁 force。成功后回查计划已联动"已采购"。
 5. 下单 `POST /api/purchase/submit-order`；到货（用户给良次品数）`POST /api/purchase/arrival`。

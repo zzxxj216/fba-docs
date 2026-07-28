@@ -9,7 +9,7 @@
 
 组装规则（PURCHASE_ORDER_API.md）：
 - 供应商id：取明细第一行 supplierId（赛狐已带）；为空则按 brandName 查 Brand.sellfox_supplier_id
-- 仓库id：按 brandName 查 Brand.sellfox_warehouse_id；为空则用默认仓库 56115
+- 仓库id：按 brandName 查 Brand.sellfox_warehouse_id；为空则用 RuleConfig 默认仓兜底
 - includeTax 固定 "0"（采购成本不含税）
 - items[]：每个采购计划明细 → sku/commodityId/num(planNum)/perPurchase(purchaseCost)/
            purchasePlanNo(plan_group_no)/expectArrivalTime
@@ -29,7 +29,10 @@ ORDER_PO_PATH = "/api/purchase/order.json"      # 下单：待下单→待到货
 ARRIVAL_PO_PATH = "/api/purchase/arrival.json"  # 到货：待到货→已完成
 CANCEL_PO_PATH = "/api/purchase/cancel.json"    # 作废：清空回退到待采购
 PAGE_PO_PATH = "/api/purchase/page.json"        # 采购单实时状态
-DEFAULT_WAREHOUSE_ID = "56115"   # 采购计划「默认仓库」对应赛狐仓库id
+def _default_warehouse_id(db):
+    """采购单默认仓库 id（品牌未配 sellfox_warehouse_id 时兜底）：走 RuleConfig，代码不写死。"""
+    from .. import rule_engine
+    return (rule_engine.get_rule(db, "sellfox_default_warehouse_id") or "").strip()
 
 # 本系统采购流程状态链（PurchasePlanConfirm.status）：
 #   待审核(采购计划) →[工厂确认]→ 待采购 →[生成采购单]→ 待下单 →[下单]→ 待到货 →[到货]→ 已完成
@@ -246,7 +249,7 @@ def build_po_body(db, plan_group_no, action="0"):
     if brand is not None:
         warehouse_id = _s(brand.sellfox_warehouse_id)
     if not warehouse_id:
-        warehouse_id = DEFAULT_WAREHOUSE_ID
+        warehouse_id = _default_warehouse_id(db)
     warehouse_name = _s(grp.get("warehouseName"))
     if not warehouse_name:
         for it in plan_items:

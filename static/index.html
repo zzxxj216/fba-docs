@@ -1033,7 +1033,7 @@
       <div class="kv"><label>店铺主体</label><div>{{shopName || '未识别'}}</div></div>
       <div class="kv"><label>站点</label><div>{{siteName}}</div></div>
       <div class="kv"><label>品牌</label><div>{{brandName || '-'}}</div></div>
-      <div class="kv"><label>供应商</label><div>{{supplierName}}<span class="muted"> （按品牌：链条系→杭州朗格链条 / 其他→嘉欣）</span></div></div>
+      <div class="kv"><label>供应商</label><div>{{supplierName}}<span class="muted"> （按品牌：链条系→杭州链条厂链条 / 其他→J厂）</span></div></div>
     </div>
 
     <template #foot>
@@ -1314,11 +1314,11 @@
   <!-- 店铺/外贸主体 -->
   <div v-if="tab!=='brands'" class="card">
     <div class="row-between">
-      <h3>{{tab==='shop' ? '店铺主体' : '外贸主体（星盟等）'}}</h3>
+      <h3>{{tab==='shop' ? '店铺主体' : '外贸主体（外贸主体等）'}}</h3>
       <button class="btn primary" @click="openCompany(null)">＋ 新增</button>
     </div>
     <table v-if="companyList.length" class="table">
-      <thead><tr><th>中文名</th><th>英文名</th><th>缩写</th><th>保价倍率</th><th>经星盟出口</th><th>默认起运港</th><th>状态</th><th class="op"></th></tr></thead>
+      <thead><tr><th>中文名</th><th>英文名</th><th>缩写</th><th>保价倍率</th><th>经外贸主体出口</th><th>默认起运港</th><th>状态</th><th class="op"></th></tr></thead>
       <tbody>
         <tr v-for="c in companyList" :key="c.id" :class="{'row-off': c.active===false}">
           <td>{{c.name_cn}}</td><td class="muted">{{c.name_en || '-'}}</td><td class="mono">{{c.abbr || '-'}}</td>
@@ -1402,7 +1402,7 @@
     <div class="form-section">业务配置</div>
     <div class="form-grid">
       <div class="field"><label>保价倍率</label><input type="number" step="0.01" v-model.number="companyForm.insurance_factor"></div>
-      <div class="field check"><label>出口经星盟（二级链路）</label>
+      <div class="field check"><label>出口经外贸主体（二级链路）</label>
         <label class="switch"><input type="checkbox" v-model="companyForm.export_via_trade"><span>{{companyForm.export_via_trade?'是':'否'}}</span></label>
       </div>
       <div class="field"><label>默认起运港</label><input v-model="companyForm.default_port"></div>
@@ -1452,7 +1452,7 @@
       </div>
       <div class="field full"><label>备注</label><textarea rows="2" v-model="brandForm.remark"></textarea></div>
     </div>
-    <div class="hint">占位符：{sa} 经星盟时="SA-" · {brand2} 品牌前2位 · {fc} 仓代码 · {date} 合同日期 · {country} 国家 · {shipdate} 发货日</div>
+    <div class="hint">占位符：{sa} 经外贸主体时="SA-" · {brand2} 品牌前2位 · {fc} 仓代码 · {date} 合同日期 · {country} 国家 · {shipdate} 发货日</div>
     <template #foot>
       <button class="btn" @click="brandForm=null">取消</button>
       <button class="btn primary" :class="{loading: saving}" :disabled="saving" @click="saveBrand">{{saving?'保存中…':'保存'}}</button>
@@ -1488,7 +1488,7 @@
     <div v-else class="empty-state">
       <div class="empty-ico">🚚</div>
       <div class="empty-title">还没有货代</div>
-      <div class="empty-sub">「赛狐物流商名」需与赛狐 logisticProviderName 完全一致才能自动匹配（如：跨运通）。</div>
+      <div class="empty-sub">「赛狐物流商名」需与赛狐 logisticProviderName 完全一致才能自动匹配（如：货代K）。</div>
       <button class="btn primary" @click="openFwd(null)">＋ 新增货代</button>
     </div>
   </div>
@@ -1606,7 +1606,7 @@
     <!-- 步骤1 基本信息 -->
     <div v-show="wizStep===1" class="wiz-pane">
       <div class="form-grid">
-        <div class="field"><label>模板名称 *</label><input v-model="wiz.name" placeholder="跨运通-托书"></div>
+        <div class="field"><label>模板名称 *</label><input v-model="wiz.name" placeholder="货代K-托书"></div>
         <div class="field"><label>文件类型</label>
           <select v-model="wiz.doc_type"><option v-for="d in docTypes" :key="d" :value="d">{{d}}</option></select>
         </div>

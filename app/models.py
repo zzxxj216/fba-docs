@@ -32,7 +32,7 @@ class Factory(Base):
 
 
 class Company(Base):
-    """公司主体：店铺公司(shop) / 外贸主体(trade，星盟)。"""
+    """公司主体：店铺公司(shop) / 外贸主体(trade，外贸主体)。"""
     __tablename__ = "companies"
     id = Column(Integer, primary_key=True)
     type = Column(String(16), default="shop")      # shop / trade
@@ -40,14 +40,14 @@ class Company(Base):
     name_en = Column(String(255), default="")
     address_cn = Column(String(255), default="")
     address_en = Column(String(255), default="")
-    abbr = Column(String(16), default="")          # 星盟=SA
+    abbr = Column(String(16), default="")          # 外贸主体=SA
     uscc = Column(String(64), default="")          # 统一社会信用代码
     customs_code = Column(String(32), default="")
     phone = Column(String(64), default="")
     contact = Column(String(64), default="")
     bank_info = Column(Text)
-    insurance_factor = Column(Float, default=1.0)  # 保价倍率：1.65 / 1.13 / 1.0
-    export_via_trade = Column(Boolean, default=False)  # 出口卖方是否为外贸主体(星盟)
+    insurance_factor = Column(Float, default=1.0)  # 保价倍率（主体级配置，真实档位见本地资料）
+    export_via_trade = Column(Boolean, default=False)  # 出口卖方是否为外贸主体(外贸主体)
     default_port = Column(String(64), default="宁波")
     default_origin_place = Column(String(64), default="杭州")  # 报关货源地
     # 该店铺默认要生成的文件类型清单，JSON list[str]（如 ["托书","报关资料","投保单"]）。
@@ -65,10 +65,10 @@ class Brand(Base):
     abbr2 = Column(String(8), default="")               # 编号用前2位大写，可改
     factory_id = Column(Integer, ForeignKey("factories.id"))
     company_id = Column(Integer, ForeignKey("companies.id"))
-    # 编号规则模板，占位符: {brand2} {fc} {date} {country} {shipdate} {sa}(经星盟时="SA-",否则"")
+    # 编号规则模板，占位符: {brand2} {fc} {date} {country} {shipdate} {sa}(经外贸主体时="SA-",否则"")
     doc_no_rule_shipment = Column(String(128), default="{sa}{brand2}-{fc}-{date}")
     doc_no_rule_purchase = Column(String(128), default="{sa}{brand2}-{country}-{date}")
-    sellfox_supplier_id = Column(String(32), default="")   # 赛狐供应商id（生成采购单用，链条系21797/嘉欣539122）
+    sellfox_supplier_id = Column(String(32), default="")   # 赛狐供应商id（生成采购单用）
     sellfox_warehouse_id = Column(String(32), default="")  # 赛狐仓库id（采购单，空则用采购计划默认仓库）
     default_site = Column(String(16), default="美国")       # 默认站点（未建仓采购计划补站点用）
     amazon_store = Column(String(32), default="")           # mcapi AMAZON_STORES_JSON 的 store key（空=默认店 main）
@@ -114,7 +114,7 @@ class Product(Base):
     hs_code = Column(String(32), default="")
     declare_elements = Column(Text)                      # 申报要素
     material = Column(String(128), default="")
-    material_en = Column(String(128), default="")    # 英文材质（盈和托书 H 列）
+    material_en = Column(String(128), default="")    # 英文材质（货代Y托书 H 列）
     usage = Column(String(128), default="")
     brand_name = Column(String(64), default="")
     model = Column(String(128), default="")

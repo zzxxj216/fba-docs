@@ -1,8 +1,8 @@
-"""两级采购合同生成（朗格系 Byane/Zentop/RazEdg）——按 docs/doc_rules/采购合同.md v0.2。
+"""两级采购合同生成（链条系 Byane/Zentop/RazEdg）——按 docs/doc_rules/采购合同.md v0.2。
 
 每批次两份：
-  一级：工厂(朗格锯链) → 店铺主体，单价=成本×vat_factor(1.13)，号 {店2}-LG-{合同日期}，交货地点=工厂
-  二级：店铺主体 → 星盟，  单价=成本×vat_factor×markup_factor(1.13×1.1)，号 SA-{店2}-{合同日期}，交货地点=货代仓库
+  一级：工厂(链条厂) → 店铺主体，单价=成本×vat_factor(1.13)，号 {店2}-LG-{合同日期}，交货地点=工厂
+  二级：店铺主体 → 外贸主体，  单价=成本×vat_factor×markup_factor(1.13×1.1)，号 SA-{店2}-{合同日期}，交货地点=货代仓库
 
 模板：templates_store/采购合同-两级公用模板.xlsx（版式同用户五份资料，明细17行起，
 尾部总值/大写/交货时间随明细行数下移）。品名=赛狐商品全名(commodityName)，
@@ -41,8 +41,8 @@ def _company_party(c: Company):
 def _chain(db, brand: Brand):
     """采购合同链：[(卖方, 买方, 系数, 合同号前缀, 交货地点, 文件名段)]。
 
-    Byane/RazEdg 两级：工厂→主体(×1.13) + 主体→星盟(×1.13×1.1)。
-    Zentop 一级(2026-07-13 用户定)：朗格园林→星盟，只 ×1.13(不乘二级 1.1)。
+    Byane/RazEdg 两级：工厂→主体(×1.13) + 主体→外贸主体(×1.13×1.1)。
+    Zentop 一级(2026-07-13 用户定)：园林厂→外贸主体，只 ×1.13(不乘二级 1.1)。
     """
     factory = db.get(Factory, brand.factory_id) if brand.factory_id else None
     store_co = db.get(Company, brand.company_id) if brand.company_id else None
@@ -170,7 +170,7 @@ def _fill_contract(dst, seller, buyer, no, contract_date, deliver_date, place, r
 
 
 def generate_two_level(db, batch_id, persist=True):
-    """给朗格系批次生成两份采购合同。返回 {generated:[路径], warnings:[...]}。"""
+    """给链条系批次生成两份采购合同。返回 {generated:[路径], warnings:[...]}。"""
     batch = db.get(Batch, batch_id)
     if batch is None:
         raise RuntimeError(f"批次不存在：{batch_id}")

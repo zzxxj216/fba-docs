@@ -41,3 +41,11 @@ ScreenShot_*.png
 seed_pkg*.zip
 fba_docs.db
 CLAUDE.local.md
+# 内部规划/设计文档：随本地资料分发，不入公开仓
+SKILL_INBOUND.md
+OPENSOURCE_PLAN.md
+DESIGN.md
+AGENT_FORWARDER.md
+CONTRACTS.md
+CONTRACT_PARALLEL.md
+*.png

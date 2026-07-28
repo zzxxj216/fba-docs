@@ -403,7 +403,7 @@ const PageBatches = {
 };
 
 /* ============ [2.5] 采购确认 ============ */
-/* 供应商映射（PURCHASE_ORDER_API.md）：链条系→杭州朗格链条 / 其他→嘉欣 */
+/* 供应商展示名：按品牌系族区分（真实名称见品牌档案/本地资料） */
 const CHAIN_BRANDS = ['zentop', 'byane', 'razedg'];
 function isChainBrand(name) {
   const s = String(name || '').toLowerCase();
@@ -449,7 +449,7 @@ const PagePurchase = {
     siteName() { return this.firstItem.site_name || '美国'; },
     supplierName() {
       if (this.firstItem.supplier_name) return this.firstItem.supplier_name;
-      return isChainBrand(this.brandName || this.shopName) ? '杭州朗格链条有限公司' : '安庆市嘉欣医疗用品科技有限公司';
+      return isChainBrand(this.brandName || this.shopName) ? '链条系默认供应商' : '默认供应商';
     },
   },
   async mounted() { await this.loadPlans(1); },

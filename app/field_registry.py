@@ -73,7 +73,7 @@ FIELD_DICT = {
         "name_contract": "合同用品名",
         "name_category": "品名品类词(品名去品牌与规格,报关单商品名称)",
         "name_spec": "品名规格段(品名去品牌与尾部品类词,快贝托书规格型号)",
-        "name_sku_cn": "SKU（中文报关名）(舟峰/保峰/玫玑研系报关合同/发票/箱单品名)",
+        "name_sku_cn": "SKU（中文报关名）(B系主体/主体M系报关合同/发票/箱单品名)",
         "name_invoice": "发票箱单品名",
         "name_usage": "用途功能品名",
         "hs_code": "HS编码",
@@ -171,7 +171,7 @@ FIELD_DICT = {
         "insurance_price": "保价单价",
         "insurance_amount": "保价金额",
         "contract_date_cn": "合同日期(中文)",
-        # 申报主体(export_via_trade 时=外贸主体星盟，否则=店铺主体)——报关资料用
+        # 申报主体(export_via_trade 时=外贸主体外贸主体，否则=店铺主体)——报关资料用
         "declare_name_cn": "申报主体中文名",
         "declare_name_en": "申报主体英文名",
         "declare_uscc": "申报主体信用代码",
@@ -267,9 +267,9 @@ def _spec_from_name(name):
 def _declare_full(p, db=None, company=None):
     """报关单明细行申报要素串——按主体分家（2026-07-15 Ding-报关单修改需求）：
 
-    - 朗格系(昕云/朗格园林/刃速等)：'用途|材质|品牌|规格：{品名截取}'（2026-07-07 定）
-    - 舟峰/保峰系(HUHOLE/BFPeaky/XINGNEST)：'用途|材质|加工方法：X|品牌|SKU'
-    - 玫玑研(Serenorch)：'用途|加工方法：X|材质|品牌|SKU'
+    - 链条系(主体X/园林厂/主体R等)：'用途|材质|品牌|规格：{品名截取}'（2026-07-07 定）
+    - B系主体(HUHOLE/BFPeaky/XINGNEST)：'用途|材质|加工方法：X|品牌|SKU'
+    - 主体M(Serenorch)：'用途|加工方法：X|材质|品牌|SKU'
     加工方法走 RuleConfig `declare_process_method`(company 级；空=不加该段)。
     """
     if p is None:
@@ -279,7 +279,7 @@ def _declare_full(p, db=None, company=None):
         proc = (rule_engine.get_rule(db, "declare_process_method", company.id) or "").strip()
     ctype = (getattr(company, "type", "") or "") if company is not None else ""
     is_serenorch = company is not None and company.id == 7
-    is_zhoufeng = company is not None and company.id in (8, 9)   # 舟峰/保峰系(XINGNEST 归入后同)
+    is_zhoufeng = company is not None and company.id in (8, 9)   # B系主体(XINGNEST 归入后同)
     if is_serenorch:
         s = f"用途：{p.usage or ''}"
         if proc:
@@ -368,7 +368,7 @@ def _item_row(it, seq, db, company):
         "carton_l_in": carton_in[0],
         "carton_w_in": carton_in[1],
         "carton_h_in": carton_in[2],
-        # 长×宽×高(in) 乘积——HUHOLE/BFPeaky 跨运通托书 C 列口径（RPA 将
+        # 长×宽×高(in) 乘积——HUHOLE/BFPeaky 货代K托书 C 列口径（RPA 将
         # 三个英寸尺寸直接相乘写入，保留浮点全精度）
         "carton_lwh_in": (carton_in[0] * carton_in[1] * carton_in[2]
                           if None not in carton_in else None),
@@ -383,7 +383,7 @@ def _item_row(it, seq, db, company):
             if p is not None and p.box_weight_kg is not None
             and it.box_count is not None else None),
         "declare_full": _declare_full(p, db=db, company=company),
-        # 合同/发票/箱单品名(舟峰/保峰/玫玑研系)：SKU（中文报关名），如 Huhole-p-round-8（孔板展示挂钩）
+        # 合同/发票/箱单品名(B系主体/主体M系)：SKU（中文报关名），如 Huhole-p-round-8（孔板展示挂钩）
         "name_sku_cn": (f"{p.sku}（{p.name_customs_cn}）" if p.name_customs_cn else p.sku) if p else "",
         "customs_unit_price": price,
         "purchase_cost": cost,
@@ -568,7 +568,7 @@ def _shipment_calc(db, batch, sp, item_rows, company):
         "contract_date_cn": _cn_date(batch.contract_date),
     }
     # 申报主体(报关单境内发货人/生产销售单位、报关合同卖方)：
-    # export_via_trade(朗格系) → 外贸主体(星盟)；否则店铺主体自己。见 docs/doc_rules/报关资料.md
+    # export_via_trade(链条系) → 外贸主体(外贸主体)；否则店铺主体自己。见 docs/doc_rules/报关资料.md
     declarer = company
     if company is not None and getattr(company, "export_via_trade", False) and db is not None:
         declarer = (db.query(Company)

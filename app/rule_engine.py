@@ -16,9 +16,8 @@ DEFAULT_RULES = {
     "net_weight_deduction": ("0.5", "净重扣减(kg/箱)"),
     "vat_factor": ("1.13", "增值税系数"),
     "markup_factor": ("1.10", "二级合同加价系数"),
-    # 采购合同单价系数：合同单价 = 采购成本 × 系数（不四舍五入，保留全精度，
-    # 对照 RPA 成品口径：Serenorch=1.0(原价)、舟峰/保峰系=1.695(=1.5×1.13)）。
-    # 主体级覆盖：scope='company:{id}'。
+    # 采购合同单价系数：合同单价 = 采购成本 × 系数（不四舍五入，保留全精度）。
+    # 主体级覆盖：scope='company:{id}'，真实档位由 seed 包写入 RuleConfig。
     "contract_price_factor": ("1.0", "采购合同单价系数(成本×系数)"),
     # 报关价计算：报关价($) = ROUND(采购价×vat×markup×markup÷汇率,1) + ROUND(箱重÷每箱数÷汇率×系数,1)
     "customs_markup_factor": ("1.10", "报关价加价系数(应用两次)"),
@@ -39,14 +38,11 @@ DEFAULT_RULES = {
     "fragile": ("无易碎品", "易碎品"),
     "insurance_currency": ("人民币", "保险币种"),
     "insurance_ratio": ("100%", "投保比例"),
-    # 报关资料境外收货人：默认 BYANE CO., LIMITED；Serenorch(主体7玫玑研)按
-    # company:7 覆盖为 AMAZON.COM SERVICES, INC.（见 docs/doc_rules/报关资料.md）
-    "overseas_consignee": ("BYANE CO., LIMITED", "境外收货人"),
-    # 境外收货人/买方地址(报关合同 B10)：舟峰/保峰系(company:8/9)=XING NEST 的香港地址
-    "overseas_consignee_address": ("ROOM 1006, 10/F., PO YIP BUILDING, 23 HING YIP STREET, Kwun Tong, Hong Kong",
-                                   "境外收货人地址"),
-    # 申报要素"加工方法"段(2026-07-15 Ding需求)：主体级配置，空=不加该段。
-    # 舟峰/保峰(company:8/9)=冲压，表面处理；玫玑研(company:7)=机织
+    # 报关资料境外收货人（名称/地址）：真实值按全局/主体级(scope='company:{id}')
+    # 存 RuleConfig（seed 包写入），代码不落任何真实公司名/地址。
+    "overseas_consignee": ("", "境外收货人"),
+    "overseas_consignee_address": ("", "境外收货人地址"),
+    # 申报要素"加工方法"段：主体级配置，空=不加该段。
     "declare_process_method": ("", "申报要素加工方法"),
 }
 
@@ -141,7 +137,7 @@ def price_vat_markup(cost, db=None, company_id=None):
 
 def price_contract(cost, db=None, company_id=None):
     """采购合同单价 = 采购成本 × contract_price_factor（**不四舍五入**——
-    HUHOLE/BFPeaky 成品合同单价为全精度，如 21.61×1.695=36.62895）。"""
+    HUHOLE/BFPeaky 成品合同单价为全精度，如 21.61×主体级档位=36.62895）。"""
     if cost is None:
         return None
     return cost * get_rule_float(db, "contract_price_factor", company_id, 1.0)
@@ -155,7 +151,7 @@ def customs_price(cost, box_weight_kg, qty_per_box, db=None, company_id=None):
     if cost is None:
         return None
     vat = get_rule_float(db, "vat_factor", company_id, 1.13)
-    # 两道加价：customs_markup_factor 可调（用户改的那个 1.1→1.5），markup_factor 固定二级加价(1.1)
+    # 两道加价：customs_markup_factor 可调（按主体在 RuleConfig 覆盖），markup_factor 为二级加价系数
     markup1 = get_rule_float(db, "customs_markup_factor", company_id, 1.10)
     markup2 = get_rule_float(db, "markup_factor", company_id, 1.10)
     exch = get_rule_float(db, "customs_exchange_rate", company_id, 7.0) or 7.0

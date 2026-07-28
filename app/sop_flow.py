@@ -21,7 +21,7 @@ STEPS = [
     {"key": "send_forwarder", "label": "发文件给货代", "desc": "托书→报关→投保（微信群）", "type": "manual"},
     {"key": "purchase", "label": "采购", "desc": "ERP 生成采购单/下单/到货", "type": "auto", "action": "purchase"},
     {"key": "logistics_cost", "label": "物流成本录入", "desc": "进仓后按货代数据录入", "type": "manual"},
-    {"key": "fee_check", "label": "保费/预录单核对", "desc": "保费=投保金额×千分之三", "type": "manual"},
+    {"key": "fee_check", "label": "保费/预录单核对", "desc": "按保险费率核对保费", "type": "manual"},
     {"key": "tracking", "label": "货物状态", "desc": "Tracking ID / Delivery Window", "type": "manual"},
 ]
 
