@@ -13,7 +13,7 @@ from sqlalchemy.orm import Session
 
 from ..database import OUTPUT_DIR, get_db
 from ..models import Batch, Forwarder, GeneratedDoc, Shipment, ShipmentItem, Template
-from ..services import validate_service, batch_prep_service, inbound_service
+from ..services import validate_service, batch_prep_service
 from .. import sop_flow
 
 router = APIRouter()
@@ -153,63 +153,6 @@ def batch_fill_products(batch_id: int, db: Session = Depends(get_db)):
     res = batch_prep_service.fill_missing_products(db, b)
     res["prep"] = batch_prep_service.aggregate(db, b)
     return res
-
-
-@router.post("/batches/{batch_id}/build")
-def build_batch(batch_id: int, db: Session = Depends(get_db)):
-    """直接给批次建仓（不走向导）：用批次明细跑亚马逊建仓，分仓方案落到 batch.placement_options。"""
-    b = db.get(Batch, batch_id)
-    if b is None:
-        raise HTTPException(404, f"批次 {batch_id} 不存在")
-    try:
-        return inbound_service.build_for_batch(db, b)
-    except RuntimeError as e:
-        db.rollback()
-        raise HTTPException(502, str(e))
-
-
-@router.post("/batches/{batch_id}/confirm-placement")
-def confirm_placement(batch_id: int, data: dict, db: Session = Depends(get_db)):
-    """确认分仓方案 + 配自送运输 + 回填货件（批次线门B）。body: {placement_option_id, live}。
-
-    live 缺省 false=演练：不碰亚马逊，但会 materialize 本地逐 FC 货件行（有 fc_code 保护）。
-    live=true 真实写亚马逊（确认方案=正式生成货件，不可逆），须逐次显式传入；
-    自送运输采样最多 30 轮，最坏 20-30 分钟，客户端需配长超时。
-    （飞书通道仍走 INBOUND_LIVE_SUBMIT 环境变量门控，与本端点互不影响。）"""
-    b = db.get(Batch, batch_id)
-    if b is None:
-        raise HTTPException(404, f"批次 {batch_id} 不存在")
-    data = data or {}
-    poid = (data.get("placement_option_id") or "").strip()
-    if not poid:
-        raise HTTPException(400, "缺少 placement_option_id")
-    try:
-        return inbound_service.confirm_placement_for_batch(
-            db, b, poid, live=bool(data.get("live", False)))
-    except RuntimeError as e:
-        db.rollback()
-        raise HTTPException(502, str(e))
-
-
-@router.post("/batches/{batch_id}/labels")
-def batch_labels(batch_id: int, data: dict, db: Session = Depends(get_db)):
-    """下载并整理箱唛/FNSKU 标签（批次线门C）。body: {kind: box|fnsku, page_type?, live}。
-
-    live 缺省 false=演练只返回步骤；live=true 真实取标签并归档到 output/{批次}/labels。"""
-    b = db.get(Batch, batch_id)
-    if b is None:
-        raise HTTPException(404, f"批次 {batch_id} 不存在")
-    data = data or {}
-    kind = (data.get("kind") or "box").strip()
-    if kind not in ("box", "fnsku"):
-        raise HTTPException(400, "kind 只支持 box | fnsku")
-    try:
-        return inbound_service.fetch_labels(
-            db, b, kind=kind, page_type=data.get("page_type") or None,
-            live=bool(data.get("live", False)))
-    except RuntimeError as e:
-        db.rollback()
-        raise HTTPException(502, str(e))
 
 
 @router.post("/batches/{batch_id}/sop")

@@ -1,19 +1,10 @@
-"""mcapi（multi-channel-api）建仓服务的 HTTP 客户端。
+"""mcapi 连接配置助手（历史上是 SP-API 建仓客户端，2026-07-29 建仓改走赛狐后仅剩配置读取）。
 
-D:\amazon 不直接集成 async SP-API SDK，而是 HTTP 调用独立运行的 mcapi 服务
-（F:/练习模块/multi-channel-api，已把亚马逊 FBA 全流程封装为 /api/v1/amazon/fba/*）。
-base url 在 .env `MCAPI_BASE`（默认 http://127.0.0.1:8100）。
-
-mcapi 的 generate/confirm 操作是异步的，返回 operationId，需轮询
-GET /operations/{id} 到 SUCCESS。wait_operation 封装轮询。
+保留 _env_val/_base/_key 供 sellfox_client（代理模式）、qiwe_client（代理模式）、
+coord_client（占坑）复用。SP-API 调用函数已随建仓线移除（见 git 历史）。
 """
-
 import os
-import time
 
-import httpx
-
-API_PREFIX = "/api/v1/amazon/fba"
 _BASE = None
 _KEY = None
 
@@ -48,51 +39,3 @@ def _key():
     if _KEY is None:
         _KEY = _env_val("MCAPI_KEY")
     return _KEY
-
-
-def call(method, path, params=None, json=None, store=None, timeout=60):
-    """调 mcapi /amazon/fba 接口；store 注入为 ?store=。返回 ApiResponse.data。
-
-    连接失败 / 4xx-5xx / 业务错误均抛 RuntimeError（路由统一转 502）。
-    """
-    url = f"{_base()}{API_PREFIX}{path}"
-    q = dict(params or {})
-    if store:
-        q["store"] = store
-    headers = {"X-API-Key": _key()} if _key() else None
-    try:
-        r = httpx.request(method, url, params=q, json=json, timeout=timeout,
-                          headers=headers)
-    except httpx.HTTPError as e:
-        raise RuntimeError(f"建仓服务(mcapi)连接失败：{e}（确认 mcapi 已在 {_base()} 运行）")
-    if r.status_code >= 400:
-        raise RuntimeError(f"建仓服务 {path} 失败 HTTP {r.status_code}: {r.text[:2000]}")
-    try:
-        body = r.json()
-    except ValueError:
-        raise RuntimeError(f"建仓服务 {path} 返回非 JSON: {r.text[:200]}")
-    if isinstance(body, dict) and "data" in body:
-        return body.get("data")
-    return body
-
-
-def wait_operation(operation_id, store=None, timeout=300, interval=3):
-    """轮询异步操作到 SUCCESS；FAILED / 超时抛 RuntimeError。返回最终 op dict。"""
-    start = time.time()
-    while True:
-        op = call("GET", f"/operations/{operation_id}", store=store) or {}
-        status = op.get("operationStatus")
-        if status == "SUCCESS":
-            return op
-        if status == "FAILED":
-            raise RuntimeError(f"建仓操作失败：{op.get('operationProblems') or op}")
-        if time.time() - start > timeout:
-            raise RuntimeError(f"建仓操作超时（{timeout}s）operationId={operation_id}")
-        time.sleep(interval)
-
-
-def ping():
-    """连通性自检：列入库计划（只读）。通则返回计划数，不通抛 RuntimeError。"""
-    data = call("GET", "/inbound-plans", params={"page_size": 1}) or {}
-    plans = data.get("inboundPlans") or data.get("inboundPlanSummaries") or []
-    return {"ok": True, "base": _base(), "sample_count": len(plans)}

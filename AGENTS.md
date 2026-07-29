@@ -38,19 +38,36 @@
    防重报错→报告已有单号，禁 force。成功后回查计划已联动"已采购"。
 5. 下单 `POST /api/purchase/submit-order`；到货（用户给良次品数）`POST /api/purchase/arrival`。
 
-## 二、建仓（触发：建仓/STA/分仓/箱唛）
+## 二、建仓（触发：建仓/STA/分仓/箱唛）——经 mcapi 赛狐建仓接口
 
-1. 预检：批次定位（`GET /api/batches` → `/api/batches/{id}/full`）；`GET /api/batches/{id}/prep`
-   ready；品牌 source_address 完整（**缺了停下让用户补，绝不代填**）；amazon_store 复述确认；
-   inbound_plan_id 有值且方案空 = 卡死态只报告。
-2. 门A（确认后）`POST /api/batches/{id}/build`（真实写亚马逊，数分钟，--max-time≥900；
-   超时≠失败先查 /full；报错含"草稿计划待手动取消"→原样转告）。
-3. 方案报告：从 /full 读 placement_options 按费用排列。**停住**——口径=placement 费+货代
-   报价总成本一起比，先走询价；单方案也不自动确认。
-4. 门B：先 `POST /api/batches/{id}/confirm-placement {placement_option_id, live:false}` 演练
-   （告知会重排本地货件行；materialize_error 要念出）→ 用户说"真实提交"才 live:true
-   （最坏 20-30 分钟后台跑）→ 必须逐货件核对 /full 里 amazon_shipment_id 回填，空=报告。
-5. 门C 标签：`POST /api/batches/{id}/labels {kind: box|fnsku, live:false→true}`，核对张数=箱数。
+建仓执行全在 **mcapi**（`{MCAPI_BASE}/api/v1/sellfox/inbound/*`，请求带 `X-API-Key: {MCAPI_KEY}`）。
+本机 API 只做：输入准备、过程记录（断点续跑）、建完导入。**唯一人工停点 = 分仓方案**。
+
+1. 输入准备（本机）：明细来源 `GET /api/inbound/from-purchase-plan/{PPG}` 或
+   `POST /api/inbound/parse-excel`（表格列是英寸/磅，喂赛狐前换算：cm=in×2.54，kg=lb÷2.20462）；
+   箱规用产品库 cm/kg 原生口径，缺则先补；shop_id 查 mcapi `GET /api/v1/sellfox/shops`；
+   发货地址取 `GET /api/brands` 该品牌 source_address（JSON 解析；缺=停下让用户补，**绝不借用他店**）。
+2. 防重占坑：mcapi `POST /api/v1/checkpoints {"scope_key":"build:{PPG}","node":"build"}`，
+   409=他人已建 → 停下报告，勿重复。
+3. 门A（向用户复述店铺/明细/地址并确认后）`POST /plans` {shop_id, name=PPG, source_address,
+   items:[{msku,quantity}]}——记下返回的 plan_id 和 **owners**（后面原样回传）；随即
+   `POST /api/inbound/records {sellfox_plan_id, shop_id, name, status:"计划已创建"}` 落本机记录。
+4. 装箱 `POST /plans/{id}/packing` {box_specs:[{msku,per_box,boxes,length,width,height,weight_kg}],
+   owners}（cm/kg；单箱 ≤22.7kg）→ 记录"装箱已提交"。
+5. 停点 `GET /plans/{id}/placements`（方案过期加 regenerate=true）→ 呈现各方案仓数/FC/费用 →
+   **停住等用户选**（口径=配合货代报价一起比）→ 记录"分仓方案已生成"。
+6. 门B（用户点名方案后）`POST /plans/{id}/finalize` {placement_option_id, shop_id,
+   ready_to_ship_start 如 2026-08-04T00:00Z}——默认 FREIGHT_LTL+Other、送达窗自动选备货+50天，
+   返回货件清单 → 记录"运输已锁定"+shipments。特殊承运/窗口用细粒度三步：
+   /placements/confirm → /transport/prepare → /transport/confirm（全部货件一次传齐）。
+7. **断点续跑**：中断后 `GET /api/inbound/plans`（本机记录）取 sellfox_plan_id/shop_id →
+   mcapi `GET /plans/{id}?shop_id=` 看实际进度 → 从对应步骤接着做；每推进一步都 upsert records。
+8. 建完导入（文件撰写的前置）：`GET /api/sync/plans` 找到该 STA →
+   `POST /api/sync/import {"inbound_plan_id":…}` 落批次（货件/FBA号/明细自动进来）→
+   记录"已导入批次" → 转「文件生成」章。
+9. 箱唛 mcapi `GET /shipments/{amazonShipmentId}/labels`（自送货件 print_num 必填=箱数）；
+   货件摘要（询价口径）`GET /shipments/{amazonShipmentId}`。
+红线：建仓无取消接口（作废仅管理员在 ERP 后台人工）；发货地址店铺独有严禁串用。
 
 ## 三、询价（触发：询价/报价/比价/选货代）
 

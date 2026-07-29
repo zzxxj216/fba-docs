@@ -58,7 +58,7 @@
     <h2>批次管理</h2>
     <div class="head-ops">
       <a class="link sync-alt-link" tabindex="0" @click="openExcel()" @keydown.enter="openExcel()">或导入发货单 Excel</a>
-      <button class="btn" @click="openInbound">🏗️ 建仓</button>
+      <!-- 建仓已改走赛狐(mcapi sellfox_inbound)，由 Codex 驱动，见 AGENTS.md -->
       <button class="btn primary" @click="openSync">＋ 同步新批次</button>
     </div>
   </div>
@@ -112,7 +112,7 @@
           </td>
           <td class="muted">{{r.created_at}}</td>
           <td class="op">
-            <button v-if="r.status!=='已取消'" class="icon-action" title="取消建仓" @click="ibCancelRec(r)">🗑️</button>
+            
           </td>
         </tr>
       </tbody>
@@ -562,15 +562,15 @@
             <div class="banner-title" v-if="sopStepDone('build')">✓ 已分仓，目的仓：
               <span v-for="(sp,si) in (batch.shipments||[])" :key="si" class="chip mono">{{sp.fc_code || '-'}}</span>
             </div>
-            <div class="banner-title" v-else>尚未建仓。到「批次管理」页用 🏗️ 建仓向导完成（数据从产品库自动补箱规）。</div>
+            <div class="banner-title" v-else>尚未建仓。建仓由 Codex 经 mcapi 赛狐建仓接口完成（见 AGENTS.md），完成后走「同步」导入货件。</div>
           </div>
           <div v-if="buildProgress" class="banner">
             <div class="banner-title">⏳ {{buildProgress}}</div>
             <div class="banner-line"><span class="dot"></span><span class="banner-msg">建仓为亚马逊异步流程，请勿离开本页。</span></div>
           </div>
-          <button v-if="!(batch.placement_options||[]).length" class="btn primary" :class="{loading: buildBusy}" :disabled="buildBusy" @click="doBuildBatch">
-            🏗️ 开始建仓（用本批次明细，不走向导）
-          </button>
+          <!-- 建仓按钮已移除：建仓走 mcapi 赛狐建仓接口(Codex 驱动) -->
+
+
 
           <!-- 分仓方案（亚马逊已生成，分仓/合仓对比，未确认）-->
           <template v-if="(batch.placement_options||[]).length">

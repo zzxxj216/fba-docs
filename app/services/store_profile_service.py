@@ -27,19 +27,9 @@ def check_store(db, brand, *, probe_amazon=True):
     """单店体检。返回 {brand, checks: [(项, ok, 说明)]}。probe_amazon=True 会真调一次列表接口。"""
     checks = []
 
-    # 1) 亚马逊账户(独有)
+    # 1) 亚马逊账户(独有)——建仓已改走赛狐(mcapi sellfox_inbound)，不再探 SP-API，只查配置
     store = (brand.amazon_store or "").strip()
-    if not store:
-        checks.append(("亚马逊账户", False, "amazon_store 未配置"))
-    elif probe_amazon:
-        try:
-            from .. import amazon_fba_client as fba
-            fba.call("GET", "/inbound-plans", params={"page_size": 1}, store=store)
-            checks.append(("亚马逊账户", True, f"{store} 调通"))
-        except Exception as e:
-            checks.append(("亚马逊账户", False, f"{store} 调不通: {str(e)[:60]}"))
-    else:
-        checks.append(("亚马逊账户", True, store))
+    checks.append(("亚马逊账户", bool(store), store or "amazon_store 未配置"))
 
     # 2) 发货地址(独有，严禁回退)
     addr = None
