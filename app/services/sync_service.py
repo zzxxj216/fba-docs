@@ -540,6 +540,41 @@ def import_batch(db, inbound_plan_id):
             _set(item, "carton_h", _f(raw.get("cartonHeight")), iedited)
             _set(item, "customs_unit_price", _f(raw.get("customsUnitPrice")), iedited)
             _set(item, "purchase_cost", _f(raw.get("purchaseCost")), iedited)
+        # ---- 兜底：发货单未生成（刚建仓的 ACTIVE 计划）时，从逐箱数据构建明细行 ----
+        # 逐箱 itemList 有 msku+每箱数量；qty=Σ箱内数量、box_count=箱数；
+        # 箱规/每箱数/申报价/成本从产品库补（发货单出来后重导会走上面主路径覆盖）
+        if not merged and cartons:
+            qty_sum, per_box = {}, {}
+            for carton in cartons:
+                for cit in (carton.get("itemList") or []):
+                    m = _s(cit.get("msku"))
+                    if not m:
+                        continue
+                    q = _i(cit.get("quantity")) or 0
+                    qty_sum[m] = qty_sum.get(m, 0) + q
+                    per_box.setdefault(m, q)
+            for msku, qty in qty_sum.items():
+                item = existing_items.get(msku)
+                if item is None:
+                    item = ShipmentItem(shipment_id=sp.id, msku=msku)
+                    db.add(item)
+                iedited = set(json.loads(item.edited_fields or "[]"))
+                product = db.query(Product).filter(Product.sku == msku).first()
+                if product is None:
+                    product = _auto_create_product(db, msku, {})
+                _set(item, "product_id", product.id if product else None, iedited)
+                _set(item, "qty", qty, iedited)
+                _set(item, "box_count", box_counts.get(msku), iedited)
+                _set(item, "qty_per_box",
+                     ((product.qty_per_box if product else None) or per_box.get(msku)),
+                     iedited)
+                if product:
+                    _set(item, "carton_l", product.carton_l_cm, iedited)
+                    _set(item, "carton_w", product.carton_w_cm, iedited)
+                    _set(item, "carton_h", product.carton_h_cm, iedited)
+                    _set(item, "customs_unit_price", product.unit_price_default, iedited)
+                    _set(item, "purchase_cost", product.purchase_cost_default, iedited)
+
         # 源数据里已消失的明细删掉
         for msku, item in existing_items.items():
             if msku not in merged and merged:
