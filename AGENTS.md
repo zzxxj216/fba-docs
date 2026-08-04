@@ -47,25 +47,32 @@
 
 ## 二、建仓（触发：建仓/STA/分仓/箱唛）——经 mcapi 赛狐建仓，全程两次交互
 
-1. **开段确认（一次）**：备齐并复述——店铺（shop_id 查 mcapi `GET /api/v1/sellfox/shops`）、
+1. **开段确认（一次）**：备齐并复述——店铺（shop_id 查本机 `GET /api/inbound/shops`，
+   由其代理 mcapi `GET /api/v1/sellfox/shops`）、
    明细（`GET /api/inbound/from-purchase-plan/{PPG}` 或 `POST /api/inbound/parse-excel`，
    表格列是英寸/磅，喂赛狐前换算 cm=in×2.54、kg=lb÷2.20462）、箱规（产品库 cm/kg 原生，
    缺则列入本次要补的数据清单）、发货地址（`GET /api/brands` 该品牌 source_address）、
    备货完成时间 ready_to_ship_start 取值。
-2. 确认后**连贯执行到停点**：mcapi `POST /api/v1/checkpoints {"scope_key":"build:{PPG}"}`
-   占坑（409=他人已建，停）→ `POST /plans` {shop_id, name=PPG, source_address, items}
-   （记下 plan_id 和 **owners**）→ `POST /api/inbound/records` 落本机记录 →
-   `POST /plans/{id}/packing` {box_specs(cm/kg，单箱≤22.7kg), owners} →
-   `GET /plans/{id}/placements` → 呈现各方案仓数/FC/费用。
+2. 确认后**连贯执行到停点**：`POST /api/inbound/build/start`
+   `{plan_group_no,brand_id,shop_id,items?}`。本机接口内部严格依次执行：mcapi 占坑
+   （409=他人已建，停）→ 赛狐建计划（保存返回的 `inbound_plan_id` 和 **owners**）→
+   落本机断点记录 → 提交装箱（cm/kg，单箱≤22.7kg，且 quantity=per_box×boxes）→
+   生成分仓方案。接口只返回 `placement_options` 和 `requires_selection:true`，**绝不自动确认**。
+   呈现各方案仓数/费用/到期时间；`fulfillment_centers` 仅在赛狐确认前可提供时展示，
+   为空时明确说明“FC 将在确认方案生成货件后返回”，不可为拿 FC 提前确认。
 3. **固定拍板点**：等用户选分仓方案（口径=配合货代报价一起比；过期加 regenerate=true 重出）。
-4. 用户点名后**连贯收尾**：`POST /plans/{id}/finalize` {placement_option_id, shop_id,
-   ready_to_ship_start}——默认 FREIGHT_LTL+Other+备货+50天送达窗；特殊承运用细粒度三步
-   （/placements/confirm → /transport/prepare → /transport/confirm 全部货件一次传齐）→
-   更新 records"运输已锁定" → `GET /api/sync/plans` 找到 STA → `POST /api/sync/import`
+4. 用户点名后**连贯收尾**：`POST /api/inbound/build/{record_id}/finalize`
+   `{placement_option_id,ready_to_ship_start}`。本机先校验方案 ID 必须属于当前快照，再经 mcapi
+   finalize；默认 FREIGHT_LTL+Other+备货+50天送达窗。特殊承运才直接用 mcapi 细粒度三步
+   （`/plans/{id}/placements/confirm` → `/plans/{id}/transport/prepare` →
+   `/plans/{id}/transport/confirm`，全部货件一次传齐）→ 更新记录"运输已锁定" →
+   `GET /api/sync/plans` 找到 STA → `POST /api/sync/import`
    落批次 → 段尾汇报货件/FBA号，提示可接文件生成。箱唛：mcapi
    `GET /shipments/{amazonShipmentId}/labels`（自送 print_num 必填=箱数）。
-5. **断点续跑**：中断后 `GET /api/inbound/plans` 取 sellfox_plan_id/shop_id → mcapi
-   `GET /plans/{id}?shop_id=` 看实际进度 → 从对应步骤接着跑（已确认过的段不重新确认）。
+5. **断点续跑**：中断后 `GET /api/inbound/plans` 取 record_id/sellfox_plan_id/shop_id →
+   `GET /api/inbound/build/{record_id}/remote` 看赛狐实际进度；分仓停点之前用
+   `POST /api/inbound/build/{record_id}/resume-to-placement` 接着跑，仍会在选方案处停住。
+   已确认过的业务段不重新确认。
 
 ## 三、询价（触发：询价/报价/比价/选货代）
 

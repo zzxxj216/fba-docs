@@ -37,10 +37,16 @@ def _source_address(db, brand_id):
         addr = json.loads(b.source_address) if (b and b.source_address) else None
     except (ValueError, TypeError):
         addr = None
-    if not addr or not (addr.get("address_line1") or "").strip():
+    required = (
+        "name", "address_line1", "city", "state_or_province_code",
+        "country_code", "postal_code", "phone_number",
+    )
+    missing = [k for k in required if not str((addr or {}).get(k) or "").strip()]
+    if missing:
         raise RuntimeError(
             f"品牌「{b.name if b else brand_id}」未配置发货地址（店铺档案）——"
-            "为防店铺串联不允许回退默认地址，请先补全该店铺发货地址再建仓")
+            f"缺少 {', '.join(missing)}；为防店铺串联不允许回退默认地址，"
+            "请先补全该店铺发货地址再建仓")
     return addr
 
 ST_CREATED = "计划已创建"
@@ -254,12 +260,45 @@ def _resolve_items(db, raw_items):
         miss = [k for k, v in (("每箱数", upb), ("箱长", l_in), ("箱宽", w_in), ("箱高", h_in), ("箱重", wt)) if not v]
         if miss:
             raise RuntimeError(f"SKU {msku} 缺 {('、').join(miss)}（请在产品库补箱规，或建仓时手填）")
+        boxes = int(r.get("boxes") or 0)
+        if boxes:
+            if upb * boxes != qty:
+                raise RuntimeError(
+                    f"SKU {msku} 申报量 {qty} ≠ 每箱数 {upb} × 箱数 {boxes}；"
+                    "赛狐 STA 装箱要求数量完全一致，请先修正箱规")
+        else:
+            if qty % upb:
+                raise RuntimeError(
+                    f"SKU {msku} 申报量 {qty} 不能被每箱数 {upb} 整除；"
+                    "当前赛狐建仓只支持同一 SKU 整箱装箱，请明确调整每箱数/箱数")
+            boxes = qty // upb
         out.append({"msku": msku, "quantity": qty, "units_per_box": upb,
-                    "l_in": l_in, "w_in": w_in, "h_in": h_in, "weight_lb": wt,
+                    "boxes": boxes, "l_in": l_in, "w_in": w_in,
+                    "h_in": h_in, "weight_lb": wt,
                     "expiration": (r.get("expiration") or "").strip()})
     if not out:
         raise RuntimeError("建仓明细为空")
     return out
+
+
+def box_specs_from_items(items):
+    """本机 in/lb 建仓快照转 MCAPI 赛狐所需 cm/kg，并执行单箱重量红线。"""
+    specs = []
+    for item in items or []:
+        weight_kg = round(float(item["weight_lb"]) / LB_PER_KG, 3)
+        if weight_kg > 22.7:
+            raise RuntimeError(
+                f"SKU {item['msku']} 单箱 {weight_kg}kg 超过 22.7kg，已阻止建仓")
+        specs.append({
+            "msku": item["msku"],
+            "per_box": int(item["units_per_box"]),
+            "boxes": int(item["boxes"]),
+            "length": round(float(item["l_in"]) * CM_PER_IN, 2),
+            "width": round(float(item["w_in"]) * CM_PER_IN, 2),
+            "height": round(float(item["h_in"]) * CM_PER_IN, 2),
+            "weight_kg": weight_kg,
+        })
+    return specs
 
 
 # ---------------------------------------------------------------- 来源：补仓计划 Excel / 赛狐采购计划

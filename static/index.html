@@ -104,7 +104,7 @@
         <tr v-for="r in ibList" :key="r.id">
           <td>{{r.name || '-'}}</td>
           <td>{{ {excel:'补仓Excel', plan:'赛狐采购', manual:'手动'}[r.source_type] || r.source_type }}</td>
-          <td class="mono">{{r.amazon_inbound_plan_id || '-'}}</td>
+          <td class="mono">{{r.sellfox_plan_id || r.amazon_inbound_plan_id || '-'}}</td>
           <td><span class="badge" :class="ibStatusCls(r.status)">{{r.status}}</span></td>
           <td>
             <span v-for="(s,si) in ((r.shipments && r.shipments.shipments) || [])" :key="si" class="chip mono">{{s.fc}}</span>
@@ -446,7 +446,7 @@
       <div class="empty-state">
         <div class="empty-ico">✅</div>
         <div class="empty-title">建仓完成</div>
-        <div class="empty-sub">亚马逊入库计划 <b class="mono">{{ibRec && ibRec.amazon_inbound_plan_id}}</b> 已分仓生成货件。</div>
+        <div class="empty-sub">赛狐 STA 入库计划 <b class="mono">{{ibRec && (ibRec.sellfox_plan_id || ibRec.amazon_inbound_plan_id)}}</b> 已分仓生成货件。</div>
         <div class="plan-meta" v-if="ibRec && ibRec.shipments && ibRec.shipments.shipments">
           <span v-for="(s,si) in ibRec.shipments.shipments" :key="si" class="chip mono">{{s.fc}} · {{s.confirmationId || s.shipmentId}}</span>
         </div>
